@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 import pytest
 from unittest.mock import AsyncMock, patch
@@ -6,18 +7,210 @@ from unittest.mock import AsyncMock, patch
 from saras.bot.telegram_bot import split_message
 from saras.core.modes import discovery, execution, retrieval
 from saras.integrations.gemini_client import GroundedAnswer
-from saras.integrations.obsidian_vault import write_note
+from saras.integrations.obsidian_vault import find_concept, upsert_concept, write_note, write_raw_note
+
+BODY_ES = (
+    "## Prerrequisitos\n"
+    "- [[Contenedores]]: para entender el aislamiento de procesos\n\n"
+    "## Conceptos clave\n"
+    "- [[Container]]: unidad ligera que empaqueta una app [1]\n\n"
+    "## 1. Fundamentos\n"
+    "Docker es una plataforma de contenedores [1].\n\n"
+    "## 2. Cómo funciona\n"
+    "Usa namespaces y cgroups del kernel de Linux [1].\n\n"
+    "## 3. En la práctica / estado actual\n"
+    "Se usa ampliamente en CI/CD y microservicios [1].\n\n"
+    "## Incertidumbre y preguntas abiertas\n"
+    "- No está claro el rendimiento exacto frente a VMs ligeras.\n"
+)
+
+EXTRACTION_ES = json.dumps({
+    "short_answer": "Docker empaqueta apps en contenedores ligeros y portables.",
+    "confidence": "high",
+    "tags": ["docker", "containers"],
+    "concepts": [{
+        "name": "Container",
+        "aliases": ["Contenedor"],
+        "definition": "Una unidad ligera y aislada que empaqueta una app y sus dependencias.",
+        "why_it_matters": "Hace que los despliegues sean reproducibles.",
+        "example": "Ejecutar `docker run nginx`.",
+    }],
+})
+
+BODY_EN = (
+    "## Prerequisites\n"
+    "- [[Containers]]: to understand process isolation\n\n"
+    "## Key concepts\n"
+    "- [[Container]]: lightweight unit that packages an app [1]\n\n"
+    "## 1. Foundations\n"
+    "Docker is a container platform [1].\n\n"
+    "## 2. How it works\n"
+    "It uses Linux kernel namespaces and cgroups [1].\n\n"
+    "## 3. In practice / current state\n"
+    "Widely used in CI/CD and microservices [1].\n\n"
+    "## Uncertainty and open questions\n"
+    "- Exact performance versus lightweight VMs is unclear.\n"
+)
+
+EXTRACTION_EN = json.dumps({
+    "short_answer": "Docker packages apps into lightweight, portable containers.",
+    "confidence": "medium",
+    "tags": ["docker", "containers"],
+    "concepts": [{
+        "name": "Container",
+        "aliases": ["Docker container"],
+        "definition": "A lightweight, isolated unit that packages an app and its dependencies.",
+        "why_it_matters": "It makes deployments reproducible.",
+        "example": "Running `docker run nginx`.",
+    }],
+})
 
 
-@patch("saras.core.modes.discovery.ask", new_callable=AsyncMock, return_value="Docker Basics")
+@patch("saras.core.modes.discovery.ask", new_callable=AsyncMock,
+       side_effect=["Docker Basics", EXTRACTION_ES])
 @patch("saras.core.modes.discovery.research", new_callable=AsyncMock,
-       return_value=GroundedAnswer("A clear explanation.", ["Docs - https://docs.docker.com"]))
-def test_discovery_writes_note_with_sources(mock_research, mock_ask, vault):
-    result = asyncio.run(discovery.run("Explain Docker"))
-    assert result.reply.startswith("A clear explanation.")
+       return_value=GroundedAnswer(BODY_ES, ["Docs - https://docs.docker.com"]))
+def test_discovery_writes_hub_note_es(mock_research, mock_ask, vault):
+    result = asyncio.run(discovery.run("Explícame qué es Docker"))
     assert os.path.dirname(result.note_path) == str(vault / "Discovery")
     content = open(result.note_path, encoding="utf-8").read()
-    assert "## Sources" in content and "https://docs.docker.com" in content
+
+    assert 'type: discovery' in content
+    assert 'question: "Explícame qué es Docker"' in content
+    assert 'status: aprendiendo' in content
+    assert 'confidence: alta' in content
+    assert 'tags: [discovery, docker, containers]' in content
+    assert 'concepts: ["[[Container]]"]' in content
+    assert 'sources: ["https://docs.docker.com"]' in content
+    assert "> [!question] Pregunta" in content
+    assert "> [!summary] Respuesta corta" in content
+    assert "## Prerrequisitos" in content
+    assert "## Conceptos clave" in content
+    assert "## 1. Fundamentos" in content
+    assert "## 2. Cómo funciona" in content
+    assert "## 3. En la práctica / estado actual" in content
+    assert "## Fuentes" in content
+    assert "1. [Docs](https://docs.docker.com)" in content
+
+    assert result.reply.startswith("Docker empaqueta apps en contenedores ligeros y portables.")
+    assert "[[Container]]" in result.reply
+    assert "📚 Saved to Vault: [[Docker Basics]]" in result.reply
+
+
+@patch("saras.core.modes.discovery.ask", new_callable=AsyncMock,
+       side_effect=["Docker Basics", EXTRACTION_EN])
+@patch("saras.core.modes.discovery.research", new_callable=AsyncMock,
+       return_value=GroundedAnswer(BODY_EN, ["Docs - https://docs.docker.com"]))
+def test_discovery_writes_hub_note_en(mock_research, mock_ask, vault):
+    result = asyncio.run(discovery.run("Explain what Docker is"))
+    content = open(result.note_path, encoding="utf-8").read()
+
+    assert 'type: discovery' in content
+    assert 'status: learning' in content
+    assert 'confidence: medium' in content
+    assert "> [!question] Question" in content
+    assert "> [!summary] Short answer" in content
+    assert "## Prerequisites" in content
+    assert "## Key concepts" in content
+    assert "## 1. Foundations" in content
+    assert "## Sources" in content
+
+    assert result.reply.startswith("Docker packages apps into lightweight, portable containers.")
+    assert "📚 Saved to Vault: [[Docker Basics]]" in result.reply
+
+
+@patch("saras.core.modes.discovery.ask", new_callable=AsyncMock,
+       side_effect=["Docker Basics", EXTRACTION_ES])
+@patch("saras.core.modes.discovery.research", new_callable=AsyncMock,
+       return_value=GroundedAnswer(BODY_ES, ["Docs - https://docs.docker.com"]))
+def test_discovery_creates_concept_note(mock_research, mock_ask, vault):
+    asyncio.run(discovery.run("Explícame qué es Docker"))
+    concept_path = vault / "Concepts" / "Container.md"
+    assert concept_path.exists()
+    content = concept_path.read_text(encoding="utf-8")
+    assert "type: concept" in content
+    assert 'aliases: ["Contenedor"]' in content
+    assert "## Aparece en" in content
+    assert "- [[Docker Basics]]" in content
+    assert "## Fuentes" in content
+    assert "https://docs.docker.com" in content
+
+
+def test_upsert_concept_does_not_overwrite_and_appends_backlink_once(vault):
+    original = (
+        "---\n"
+        'title: "Container"\n'
+        "type: concept\n"
+        "date: 2026-01-01\n"
+        "status: entendido\n"
+        'aliases: ["Contenedor"]\n'
+        "tags: [concept, docker]\n"
+        "---\n\n"
+        "**Container** is a hand-written definition that must survive.\n\n"
+        "## Why it matters\nBecause I wrote it myself.\n\n"
+        "## Appears in\n- [[Old Note]]\n"
+    )
+    existing_path = write_raw_note("Concepts", "Container", original)
+
+    new_content = '---\ntitle: "Container"\n---\n\nThis should never be written.\n'
+    path = upsert_concept(
+        name="Container", aliases=["Contenedor"], content=new_content,
+        backlink_heading="Appears in", backlink_line="- [[New Hub]]",
+    )
+    assert path == existing_path
+    text = open(path, encoding="utf-8").read()
+    assert "hand-written definition that must survive" in text
+    assert "This should never be written" not in text
+    assert "- [[Old Note]]" in text
+    assert text.count("- [[New Hub]]") == 1
+
+    upsert_concept(
+        name="Container", aliases=["Contenedor"], content=new_content,
+        backlink_heading="Appears in", backlink_line="- [[New Hub]]",
+    )
+    text = open(path, encoding="utf-8").read()
+    assert text.count("- [[New Hub]]") == 1
+
+
+def test_find_concept_matches_alias_and_accent_case_differences(vault):
+    content = (
+        "---\n"
+        'title: "Aprendizaje Automático"\n'
+        "type: concept\n"
+        "date: 2026-01-01\n"
+        "status: aprendiendo\n"
+        'aliases: ["Machine Learning", "ML"]\n'
+        "tags: [concept]\n"
+        "---\n\n"
+        "**Aprendizaje Automático** es ...\n"
+    )
+    path = write_raw_note("Concepts", "Aprendizaje Automático", content)
+
+    assert find_concept("aprendizaje automatico") == path
+    assert find_concept("machine learning") == path
+    assert find_concept("ML") == path
+    assert find_concept("Nonexistent") is None
+
+
+def test_parse_extraction_falls_back_on_bad_json():
+    data = discovery._parse_extraction("not json at all", "## 1. Foundations\nDocker is great.\n")
+    assert data["confidence"] == "medium"
+    assert data["concepts"] == []
+    assert data["tags"] == []
+    assert data["short_answer"]
+
+
+@patch("saras.core.modes.discovery.ask", new_callable=AsyncMock,
+       side_effect=["Docker Basics", "not valid json"])
+@patch("saras.core.modes.discovery.research", new_callable=AsyncMock,
+       return_value=GroundedAnswer("## 1. Foundations\nDocker packages apps.\n",
+                                    ["Docs - https://docs.docker.com"]))
+def test_discovery_handles_bad_extraction_json(mock_research, mock_ask, vault):
+    result = asyncio.run(discovery.run("Explain Docker"))
+    content = open(result.note_path, encoding="utf-8").read()
+    assert "confidence: medium" in content
+    assert "## 1. Foundations" in content
+    assert result.reply
 
 
 @patch("saras.core.modes.retrieval.ask", new_callable=AsyncMock, return_value="From [[Docker]]: containers.")
@@ -52,13 +245,16 @@ def test_split_message_respects_telegram_limit():
     assert "".join(chunks).replace("\n", "") == text.replace("\n", "")
 
 
-@patch("saras.core.modes.discovery.ask", new_callable=AsyncMock, return_value="Docker Basics")
+@patch("saras.core.modes.discovery.ask", new_callable=AsyncMock,
+       side_effect=["Docker Basics", EXTRACTION_EN])
 @patch("saras.core.modes.discovery.research", new_callable=AsyncMock,
-       return_value=GroundedAnswer("Explanation without search.", [], grounded=False))
+       return_value=GroundedAnswer("## 1. Foundations\nExplanation without search.\n",
+                                    [], grounded=False))
 def test_discovery_marks_note_when_search_was_unavailable(mock_research, mock_ask, vault):
     result = asyncio.run(discovery.run("Explain Docker"))
     content = open(result.note_path, encoding="utf-8").read()
     assert "unverified" in content
+    assert "confidence: low" in content
     assert "No web sources" in content
     assert "Sin búsqueda web" in result.reply
 

@@ -1,17 +1,12 @@
 """Retrieval Mode (Remember): answer from the Vault instead of re-researching."""
 from saras.core.modes.base import ModeResult
-from saras.integrations.gemini_client import LANGUAGE_RULE, ask
+from saras.core.persona import RETRIEVAL as SYSTEM
+from saras.integrations.gemini_client import ask
 from saras.integrations.obsidian_vault import search_notes
 
 MIN_SCORE = 2.0  # below this a match is too weak to answer from
 MAX_NOTE_CHARS = 6000
 
-SYSTEM = (
-    "You are SARAS in Retrieval Mode. Answer ONLY from the user's notes provided below. "
-    "Cite the notes you use as [[Note title]]. If the notes don't fully answer the "
-    "question, say clearly what is missing instead of filling gaps from general "
-    "knowledge. " + LANGUAGE_RULE
-)
 
 NOT_FOUND = (
     "I don't have anything on that in the Vault yet. Want me to research it? "

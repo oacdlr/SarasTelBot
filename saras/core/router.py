@@ -8,6 +8,10 @@ from saras.integrations.gemini_client import classify_intent
 
 # Checked in this order: the most specific intent wins.
 KEYWORDS = {
+    "quiz": [
+        "quiz me", "quiz", "test me", "examíname", "examiname", "hazme un quiz",
+        "ponme a prueba",
+    ],
     "retrieval": [
         "what did i", "what have i", "remind me", "last time", "did i save", "my notes",
         "qué aprendí", "que aprendi", "qué sé", "recuérdame", "recuerdame", "la última vez",

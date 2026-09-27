@@ -77,7 +77,10 @@ async def ask(prompt: str, system: str | None = None, fast: bool = False) -> str
                 raise
             log.warning("Gemini model %s is overloaded (attempt %d)", model, attempt + 1)
             continue
-        return (response.text or "").strip()
+        text = (response.text or "").strip()
+        if text:
+            return text
+        log.warning("Gemini model %s returned an empty response (attempt %d)", model, attempt + 1)
     raise ModelUnavailable("Gemini is overloaded; try again later")
 
 
@@ -113,10 +116,14 @@ async def research(prompt: str, system: str | None = None) -> GroundedAnswer:
                 entry = f"{web.title or web.domain or 'Source'} - {web.uri}"
                 if entry not in sources:
                     sources.append(entry)
-    return GroundedAnswer(text=(response.text or "").strip(), sources=sources)
+    text = (response.text or "").strip()
+    if not text:
+        log.warning("Search grounding returned no text; answering without sources")
+        return GroundedAnswer(text=await ask(prompt, system=system), grounded=False)
+    return GroundedAnswer(text=text, sources=sources)
 
 
-INTENT_LABELS = ("discovery", "retrieval", "execution", "chat")
+INTENT_LABELS = ("discovery", "retrieval", "execution", "quiz", "chat")
 
 
 async def classify_intent(message: str) -> str:
@@ -126,6 +133,7 @@ async def classify_intent(message: str) -> str:
         "- discovery: the user wants to learn or research something new\n"
         "- retrieval: the user asks about something they learned, saved or decided before\n"
         "- execution: the user wants to plan, organize or break down a task, project or deadline\n"
+        "- quiz: the user wants to be tested or quizzed on what they learned\n"
         "- chat: greetings, thanks, small talk or anything else\n\n"
         f"Message: {message}\n\nLabel:"
     )

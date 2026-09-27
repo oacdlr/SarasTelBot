@@ -2,16 +2,10 @@
 from datetime import date
 
 from saras.core.modes.base import ModeResult
-from saras.integrations.gemini_client import LANGUAGE_RULE, ask
+from saras.core.persona import EXECUTION as SYSTEM
+from saras.integrations.gemini_client import ask
 from saras.integrations.obsidian_vault import note_title, search_notes, write_note
 
-SYSTEM = (
-    "You are SARAS in Execution Mode. Turn the user's objective into an actionable plan. "
-    "Identify the deliverable and any deadline, then write an ordered Markdown checklist "
-    "(`- [ ] task (~effort)`) grouped under short headings if useful, most important and "
-    "blocking tasks first, with dates when a deadline is known. Keep it practical. "
-    + LANGUAGE_RULE
-)
 
 
 async def run(message: str, previous: list[ModeResult] | None = None) -> ModeResult:

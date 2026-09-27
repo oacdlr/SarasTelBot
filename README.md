@@ -38,7 +38,7 @@ Telegram → router (keywords, Gemini fallback) → mode → reply
 
 | Mode | Triggered by (examples) | Writes to Vault |
 | --- | --- | --- |
-| Discovery | "explain…", "research…", "qué es…", "investiga…" | `Discovery/<title>.md`, with web sources and related-note links |
+| Discovery | "explain…", "research…", "qué es…", "investiga…" | `Discovery/<title>.md` hub note (web sources, related-note links) plus a `Concepts/<name>.md` Zettelkasten note per key concept (created once, then linked back to from later notes) |
 | Retrieval | "what did I learn…", "remind me…", "qué aprendí…" | nothing; answers only from your notes and cites them |
 | Execution | "help me plan…", "due Friday", "organiza…", "entrega…" | `Execution/<title>.md` checklist |
 | Chat | greetings, thanks, small talk | nothing |

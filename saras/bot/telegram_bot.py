@@ -10,7 +10,7 @@ from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, Messa
 
 from saras import config
 from saras.bot.formatting import to_telegram_html
-from saras.core.modes import chat, discovery, execution, retrieval
+from saras.core.modes import chat, discovery, execution, quiz, retrieval
 from saras.core.modes.base import ModeResult
 from saras.core.router import route
 from saras.integrations.gemini_client import ModelUnavailable, QuotaExceeded
@@ -21,6 +21,7 @@ MODES = {
     "discovery": discovery.run,
     "retrieval": retrieval.run,
     "execution": execution.run,
+    "quiz": quiz.run,
     "chat": chat.run,
 }
 TELEGRAM_LIMIT = 4096
@@ -127,10 +128,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_allowed(update):
         return
     await update.message.reply_text(
-        "Hola, soy SARAS 🪷\n"
-        "• Ask me to research or explain something → Discovery\n"
-        "• Ask what you learned or saved before → Retrieval\n"
-        "• Ask me to plan or organize a task → Execution"
+        "Hola, soy SARAS 🪷 Tu compañera de estudio. / Your study companion.\n"
+        "• Research or explain something → I dig in and save it\n"
+        "• What you learned before → Thoth pulls it from the Vault\n"
+        "• Plan or organize a task → Athena builds the checklist\n"
+        "• \"Quiz me on …\" → I test what you've learned"
     )
 
 
