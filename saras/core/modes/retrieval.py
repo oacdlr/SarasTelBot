@@ -14,7 +14,9 @@ NOT_FOUND = (
 )
 
 
-async def run(message: str, previous: list[ModeResult] | None = None) -> ModeResult:
+async def run(
+    message: str, previous: list[ModeResult] | None = None, save: bool = True
+) -> ModeResult:  # never writes, so `save` is unused
     notes = [n for n in search_notes(message, limit=5) if n.score >= MIN_SCORE]
     if not notes:
         return ModeResult(reply=NOT_FOUND)

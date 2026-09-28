@@ -1,6 +1,6 @@
 # SARAS: To-do
 
-Last updated: 2026-09-24
+Last updated: 2026-09-28
 
 ## Done
 - [x] Read the project docs and plan v1 (guide + fixes)
@@ -37,13 +37,29 @@ Last updated: 2026-09-24
 - [x] Keep "typing…" showing until the answer is ready; for Discovery, send "🔎 Investigando…" right away and replace it with the answer
 - [x] Render Gemini's Markdown as Telegram formatting (no raw `**`, `##`, `- [ ]`)
 - [x] Make "Saved to Vault" a tappable link that opens the note in Obsidian
-- [ ] Conversation memory: keep the last few messages per chat and use them in prompts and routing (so follow-ups like "¿y en Python?" work)
+- [x] Conversation memory: last 5 exchanges per chat, forgotten after 45 min idle; used in routing, Chat mode, and to rewrite follow-ups like "¿y en Python?" into standalone requests (in RAM only, lost on restart)
 - [x] Discovery: send a short summary (5–8 lines) + note link instead of the whole note
-- [ ] Commands: `/research`, `/recall`, `/plan` to force a mode
+- [ ] Commands: `/research`, `/recall`, `/plan` to force a mode (see "Commands to-do" below)
 - [ ] Buttons under answers: "📋 Planear esto", "🔍 Más detalle", "🗑️ No guardar"
 - [ ] Let me correct a wrong mode, and log it to feed router tuning
 
+## Commands to-do
+Slash commands skip the router. The menu is registered from code at startup (`COMMAND_MENU` in `telegram_bot.py`), so BotFather needs no setup: add new commands there.
+- [x] `/research <topic>` (alias `/investiga`): Discovery mode, skips the router
+- [x] `/recall <question>` (alias `/recuerda`): Retrieval from the vault
+- [x] `/last`: re-sends the link to the last note saved
+- [x] `/status`: Gemini quota/fallback state, vault path and note counts, mode counts since start
+- [x] `/nosave`: `/nosave <message>` answers it without writing to the Vault; alone, it arms the next message (send again to cancel)
+- [ ] `/plan <goal>` (alias `/planea`): Execution checklist
+- [ ] `/quiz <topic>`: quiz on your notes
+- [ ] `/help`: lists commands and examples
+- [ ] `/notes [n]`: the n most recent notes, with links (`recent_notes()` already exists in `obsidian_vault.py`)
+- [ ] `/search <word>`: plain keyword search in the vault, no Gemini call
+- [ ] `/clear`: clears the remembered conversation (`ConversationMemory` needs a `clear(chat_id)`)
+
 ## Next improvements
+- [x] Discovery "Related": stricter `find_related()` (topic-based query, rarity-weighted title/tag matches, filler words ignored, max 3, skips Execution/Quizzes/templates); replayed against the real vault, see DEV-GUIDE section 8
+- [ ] Execution "Related knowledge" still uses the old `search_notes(...) >= 3` rule; switch it to `find_related()` if it shows the same off-topic links
 - [ ] Tune router keywords from real usage (log misrouted messages)
 - [ ] Execution: check off / update checklist items from chat
 - [ ] Retrieval: embeddings index for meaning-based search

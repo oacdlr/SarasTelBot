@@ -3,6 +3,7 @@
 Notes are plain Markdown files with YAML frontmatter, so the vault stays
 usable without SARAS.
 """
+import math
 import os
 import re
 import time
@@ -183,6 +184,40 @@ def upsert_concept(
     return write_raw_note("Concepts", name, content)
 
 
+SARAS_FOLDERS = ("Discovery", "Execution", "Quizzes", "Concepts")
+_NOTE_FOLDERS = ("Discovery", "Execution", "Quizzes")  # what a request produces, not concept notes
+
+
+def recent_notes(limit: int = 1, folders: tuple[str, ...] = _NOTE_FOLDERS) -> list[str]:
+    """Paths of the most recently written notes in `folders`, newest first."""
+    vault = config.obsidian_vault_path()
+    found: list[tuple[float, str]] = []
+    for folder in folders:
+        folder_path = os.path.join(vault, folder)
+        if not os.path.isdir(folder_path):
+            continue
+        for name in os.listdir(folder_path):
+            if name.endswith(".md"):
+                path = os.path.join(folder_path, name)
+                found.append((os.path.getmtime(path), path))
+    found.sort(reverse=True)
+    return [path for _, path in found[:limit]]
+
+
+def count_notes() -> dict[str, int]:
+    """Number of notes in each folder SARAS writes to."""
+    vault = config.obsidian_vault_path()
+    counts = {}
+    for folder in SARAS_FOLDERS:
+        folder_path = os.path.join(vault, folder)
+        counts[folder] = (
+            sum(1 for n in os.listdir(folder_path) if n.endswith(".md"))
+            if os.path.isdir(folder_path)
+            else 0
+        )
+    return counts
+
+
 def _strip_accents(text: str) -> str:
     return "".join(
         c for c in unicodedata.normalize("NFD", text) if unicodedata.category(c) != "Mn"
@@ -219,6 +254,12 @@ def _parse(path: str) -> tuple[list[str], list[str], str]:
     return tags, aliases, body
 
 
+def _word_pattern(term: str) -> re.Pattern:
+    # Whole-word match: a short term like "ia" or "ai" must not match inside an
+    # unrelated longer word (e.g. "tecnologia", "inteligencia", "again").
+    return re.compile(rf"(?<!\w){re.escape(term)}(?!\w)")
+
+
 def search_notes(query: str, limit: int = 5) -> list[Note]:
     """Keyword search over the vault, ranked by title/tag/body hits plus recency."""
     terms = [_strip_accents(k) for k in keywords(query)]
@@ -228,35 +269,124 @@ def search_notes(query: str, limit: int = 5) -> list[Note]:
 
     now = time.time()
     results: list[Note] = []
-    for root, dirs, files in os.walk(vault):
-        dirs[:] = [d for d in dirs if not d.startswith(".")]  # skip .obsidian, .trash
-        for name in files:
-            if not name.endswith(".md"):
-                continue
-            path = os.path.join(root, name)
-            try:
-                tags, aliases, body = _parse(path)
-            except (OSError, UnicodeDecodeError):
-                continue
-            title = note_title(path)
-            title_n = _strip_accents(title.lower())
-            body_n = _strip_accents(body.lower())
-            tags_n = [_strip_accents(t) for t in tags]
-            aliases_n = [_strip_accents(a.lower()) for a in aliases]
+    for path in _markdown_files(vault):
+        try:
+            tags, aliases, body = _parse(path)
+        except (OSError, UnicodeDecodeError):
+            continue
+        title = note_title(path)
+        title_n = _strip_accents(title.lower())
+        body_n = _strip_accents(body.lower())
+        tags_n = [_strip_accents(t) for t in tags]
+        aliases_n = [_strip_accents(a.lower()) for a in aliases]
 
-            score = 0.0
-            for term in terms:
-                if term in title_n or any(term in a for a in aliases_n):
-                    score += 3
-                if term in tags_n:
-                    score += 2
-                if term in body_n:
-                    score += 1 + min(body_n.count(term), 5) * 0.1
-            if score == 0:
-                continue
-            age_days = (now - os.path.getmtime(path)) / 86400
-            score += max(0.0, 1.0 - age_days / 365)  # small boost for recent notes
-            results.append(Note(path=path, title=title, body=body.strip(), tags=tags, score=score))
+        score = 0.0
+        for term in terms:
+            pattern = _word_pattern(term)
+            if pattern.search(title_n) or any(pattern.search(a) for a in aliases_n):
+                score += 3
+            if term in tags_n:
+                score += 2
+            count = len(pattern.findall(body_n))
+            if count:
+                score += 1 + min(count, 5) * 0.1
+        if score == 0:
+            continue
+        age_days = (now - os.path.getmtime(path)) / 86400
+        score += max(0.0, 1.0 - age_days / 365)  # small boost for recent notes
+        results.append(Note(path=path, title=title, body=body.strip(), tags=tags, score=score))
+
+    results.sort(key=lambda n: n.score, reverse=True)
+    return results[:limit]
+
+
+# find_related(): stricter than search_notes(), because a wrong "Related" link sits
+# in a note forever. Weights are normalised to 0-1, so a title hit on a term unique
+# to one note is worth 3 and one on a term half the vault shares is worth almost 0.
+RELATED_MIN_SCORE = 2.0  # summed evidence a note needs to be listed
+RELATED_MIN_TERM_WEIGHT = 0.5  # and at least one shared term this specific
+_RELATED_SKIP_FOLDERS = ("Execution", "Quizzes", "templates")
+_RELATED_MIN_POOL = 30
+# Words that fill note titles ("Guía para…", "Overview of…") without naming a topic.
+# Rarity alone can't catch them: two notes sharing "guía" look like a strong match.
+_TITLE_FILLER = {
+    "guia", "guide", "overview", "definition", "definicion", "introduction", "introduccion",
+    "understanding", "resumen", "summary", "research", "investigacion", "profunda", "deep",
+    "comparativa", "comparison", "biography", "biografia", "cultural", "impact", "impacto",
+    "caracteristicas", "characteristics", "esencial", "essential", "iconic", "basics",
+    "fundamentos", "fundamentals", "funciona", "works", "working", "explained", "figura",
+    "argumento", "commands", "configuration", "plan", "curso", "course", "tutorial",
+}
+
+
+def _markdown_files(vault: str, skip: tuple[str, ...] = ()):
+    """Yield every .md path in the vault, skipping hidden dirs and top-level `skip` folders."""
+    for root, dirs, files in os.walk(vault):
+        at_top = os.path.normpath(root) == os.path.normpath(vault)
+        dirs[:] = [d for d in dirs if not d.startswith(".") and not (at_top and d in skip)]
+        for name in files:
+            if name.endswith(".md"):
+                yield os.path.join(root, name)
+
+
+def find_related(topic: str, exclude: set[str] | frozenset[str] = frozenset(), limit: int = 3) -> list[Note]:
+    """Notes about the same topic as `topic` (title, concept names, tags): for "## Related".
+
+    Only title, alias and tag matches count as evidence, each weighted by how rare
+    the term is across the vault, so generic words ("guía", "definición") and
+    incidental body mentions can't link unrelated notes. `exclude` is a set of
+    note titles to leave out (e.g. the concepts the hub already lists).
+    """
+    terms = list(dict.fromkeys(_strip_accents(k) for k in keywords(topic)))  # "penélope" == "penelope"
+    terms = [t for t in terms if t not in _TITLE_FILLER]
+    vault = config.obsidian_vault_path()
+    if not terms or not os.path.isdir(vault):
+        return []
+
+    patterns = {t: _word_pattern(t) for t in terms}
+    excluded = {_strip_accents(t.lower()) for t in exclude}
+    pool = []  # (path, title, tags, body, terms matched in title/aliases, terms matched in tags)
+    for path in _markdown_files(vault, skip=_RELATED_SKIP_FOLDERS):
+        title = note_title(path)
+        if _strip_accents(title.lower()) in excluded:
+            continue
+        try:
+            tags, aliases, body = _parse(path)
+        except (OSError, UnicodeDecodeError):
+            continue
+        names = [_strip_accents(title.lower())] + [_strip_accents(a.lower()) for a in aliases]
+        tags_n = {_strip_accents(t) for t in tags}
+        in_title = {t for t in terms if any(patterns[t].search(n) for n in names)}
+        in_real_title = {t for t in in_title if patterns[t].search(names[0])}
+        in_tags = {t for t in terms if t in tags_n} - in_title
+        pool.append((path, title, tags, body, in_title, in_real_title, in_tags))
+    if not pool:
+        return []
+
+    # Rarity of each term among the candidates: 1.0 = unique to one note, ~0 = in most.
+    # The floor keeps a young vault from calling every term common.
+    size = max(len(pool), _RELATED_MIN_POOL)
+    document_frequency = {
+        t: sum(1 for _, _, _, _, in_title, _, in_tags in pool if t in in_title or t in in_tags)
+        for t in terms
+    }
+    weight = {t: math.log((size + 1) / (df + 1)) / math.log(size + 1) for t, df in document_frequency.items()}
+
+    results: list[Note] = []
+    for path, title, tags, body, in_title, in_real_title, in_tags in pool:
+        matched = in_title | in_tags
+        if not matched or max(weight[t] for t in matched) < RELATED_MIN_TERM_WEIGHT:
+            continue
+        # One shared word is enough only when it is in the note's own title
+        # ("Hamilton"); via an alias or tag ("State" in "State Graph") it is a coincidence.
+        if len(matched) < 2 and not matched <= in_real_title:
+            continue
+        score = sum(3 * weight[t] for t in in_title) + sum(2 * weight[t] for t in in_tags)
+        if score < RELATED_MIN_SCORE:
+            continue
+        body_n = _strip_accents(body.lower())
+        score += sum(0.05 * weight[t] for t in terms if patterns[t].search(body_n))  # tie-break only
+        results.append(Note(path=path, title=title, body=body.strip(), tags=tags, score=score))
 
     results.sort(key=lambda n: n.score, reverse=True)
     return results[:limit]

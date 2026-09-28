@@ -7,8 +7,8 @@ from saras.core.modes.base import ModeResult
 from saras.core.persona import DISCOVERY_PREFIX
 from saras.integrations.gemini_client import LANGUAGE_RULE, ask, research
 from saras.integrations.obsidian_vault import (
+    find_related,
     note_title,
-    search_notes,
     upsert_concept,
     write_raw_note,
 )
@@ -70,7 +70,8 @@ _EXTRACTION_SYSTEM = (
     "object, no code fences and no commentary, matching this shape exactly:\n"
     '{"short_answer": "3-5 lines summarizing the core idea/verdict, same language as the '
     'text", "confidence": "high|medium|low", "tags": ["2-4 lowercase hyphenated topic '
-    'tags"], "concepts": [{"name": "", "aliases": [], "definition": "1-2 sentences", '
+    'tags, ALWAYS in English regardless of the text\'s language"], "concepts": '
+    '[{"name": "", "aliases": [], "definition": "1-2 sentences", '
     '"why_it_matters": "", "example": ""}]}\n'
     "Include the 2-6 most important concepts from the text."
 )
@@ -281,7 +282,9 @@ def _build_hub_content(
     return "\n".join(lines) + "\n"
 
 
-async def run(message: str, previous: list[ModeResult] | None = None) -> ModeResult:
+async def run(
+    message: str, previous: list[ModeResult] | None = None, save: bool = True
+) -> ModeResult:
     lang = "es" if _is_spanish(message) else "en"
     s = _STRINGS[lang]
 
@@ -296,11 +299,8 @@ async def run(message: str, previous: list[ModeResult] | None = None) -> ModeRes
     if not grounded:
         tags.append("unverified")
 
-    # Search before writing anything, so this run's own new notes can't show up as "related".
-    related = [n for n in search_notes(f"{title} {message}", limit=5) if n.score >= 3]
-
     concept_titles = []
-    for concept in extraction["concepts"]:
+    for concept in extraction["concepts"] if save else []:
         path = upsert_concept(
             name=concept["name"],
             aliases=concept["aliases"],
@@ -309,6 +309,12 @@ async def run(message: str, previous: list[ModeResult] | None = None) -> ModeRes
             backlink_line=f"- [[{title}]]",
         )
         concept_titles.append(note_title(path))
+
+    # Relate by topic (title, concept names, tags), not by the chat message. The hub
+    # isn't written yet, and the concepts it already lists are excluded.
+    concept_names = [c["name"] for c in extraction["concepts"]]
+    topic = " ".join([title, *concept_names, *extraction["tags"]])
+    related = find_related(topic, exclude={title, *concept_names, *concept_titles})
 
     parts = [body]
     if not grounded:
@@ -329,6 +335,15 @@ async def run(message: str, previous: list[ModeResult] | None = None) -> ModeRes
                 for i, e in enumerate(answer.sources, 1)
             )
         )
+
+    if not save:
+        reply = extraction["short_answer"]
+        if extraction["concepts"]:
+            reply += "\n\n" + "\n".join(f"• {c['name']}" for c in extraction["concepts"])
+        reply += "\n\n🚫 Not saved to Vault (/nosave)"
+        if not grounded:
+            reply += "\n⚠️ Sin búsqueda web (cuota de Gemini) — respuesta sin fuentes."
+        return ModeResult(reply=reply)
 
     content = _build_hub_content(
         title=title,

@@ -22,7 +22,9 @@ NOT_FOUND = (
 )
 
 
-async def run(message: str, previous: list[ModeResult] | None = None) -> ModeResult:
+async def run(
+    message: str, previous: list[ModeResult] | None = None, save: bool = True
+) -> ModeResult:
     topic = _TOPIC_NOISE.sub(" ", message).strip(" ?.!,") or message
     notes = [
         n
@@ -34,6 +36,9 @@ async def run(message: str, previous: list[ModeResult] | None = None) -> ModeRes
 
     context = "\n\n".join(f"=== [[{n.title}]] ===\n{n.body[:MAX_NOTE_CHARS]}" for n in notes)
     quiz = await ask(f"User's notes:\n\n{context}\n\nTopic: {topic}", system=QUIZ)
+
+    if not save:  # nothing to keep the answers in, so show the whole quiz
+        return ModeResult(reply=f"{quiz.strip()}\n\n🚫 Not saved to Vault (/nosave)")
 
     links = "\n".join(f"- [[{n.title}]]" for n in notes)
     path = write_note(

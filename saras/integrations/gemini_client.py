@@ -5,6 +5,7 @@ swapped later without touching mode logic.
 """
 import asyncio
 import logging
+import time
 from dataclasses import dataclass, field
 
 from google import genai
@@ -41,6 +42,19 @@ class ModelUnavailable(RuntimeError):
 BUSY_RETRY_DELAY = 3  # seconds to wait before retrying an overloaded model
 
 
+@dataclass
+class GeminiHealth:
+    """When (epoch seconds) Gemini last worked or misbehaved, for /status. None = not since start."""
+
+    last_ok: float | None = None
+    last_quota_error: float | None = None  # a plain request hit the quota
+    last_search_fallback: float | None = None  # search grounding failed; answered without sources
+    last_busy: float | None = None  # a model was overloaded (503)
+
+
+health = GeminiHealth()
+
+
 def _is_quota_error(exc: Exception) -> bool:
     return isinstance(exc, errors.ClientError) and exc.code == 429
 
@@ -72,13 +86,16 @@ async def ask(prompt: str, system: str | None = None, fast: bool = False) -> str
             )
         except Exception as exc:
             if _is_quota_error(exc):
+                health.last_quota_error = time.time()
                 raise QuotaExceeded(str(exc)) from exc
             if not _is_busy_error(exc):
                 raise
+            health.last_busy = time.time()
             log.warning("Gemini model %s is overloaded (attempt %d)", model, attempt + 1)
             continue
         text = (response.text or "").strip()
         if text:
+            health.last_ok = time.time()
             return text
         log.warning("Gemini model %s returned an empty response (attempt %d)", model, attempt + 1)
     raise ModelUnavailable("Gemini is overloaded; try again later")
@@ -103,9 +120,11 @@ async def research(prompt: str, system: str | None = None) -> GroundedAnswer:
         if _is_quota_error(exc):
             log.warning("Search grounding unavailable (quota); answering without sources")
         elif _is_busy_error(exc):
+            health.last_busy = time.time()
             log.warning("Gemini overloaded during search; answering without sources")
         else:
             raise
+        health.last_search_fallback = time.time()
         return GroundedAnswer(text=await ask(prompt, system=system), grounded=False)
     sources: list[str] = []
     for candidate in response.candidates or []:
@@ -119,14 +138,17 @@ async def research(prompt: str, system: str | None = None) -> GroundedAnswer:
     text = (response.text or "").strip()
     if not text:
         log.warning("Search grounding returned no text; answering without sources")
+        health.last_search_fallback = time.time()
         return GroundedAnswer(text=await ask(prompt, system=system), grounded=False)
+    health.last_ok = time.time()
     return GroundedAnswer(text=text, sources=sources)
 
 
 INTENT_LABELS = ("discovery", "retrieval", "execution", "quiz", "chat")
 
 
-async def classify_intent(message: str) -> str:
+async def classify_intent(message: str, history: str = "") -> str:
+    """Pick a mode label; `history` is recent conversation, so follow-ups keep their mode."""
     prompt = (
         "You route messages for SARAS, a personal knowledge assistant. "
         "Classify the message with exactly one word:\n"
@@ -135,8 +157,13 @@ async def classify_intent(message: str) -> str:
         "- execution: the user wants to plan, organize or break down a task, project or deadline\n"
         "- quiz: the user wants to be tested or quizzed on what they learned\n"
         "- chat: greetings, thanks, small talk or anything else\n\n"
-        f"Message: {message}\n\nLabel:"
     )
+    if history:
+        prompt += (
+            f"{history}\n\nA short follow-up (e.g. \"and in Python?\") continues what the "
+            "conversation was doing.\n\n"
+        )
+    prompt += f"Message: {message}\n\nLabel:"
     answer = (await ask(prompt, fast=True)).lower()
     for label in INTENT_LABELS:
         if label in answer:

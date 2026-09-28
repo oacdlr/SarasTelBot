@@ -335,3 +335,16 @@ def test_ask_raises_model_unavailable_when_all_overloaded(monkeypatch):
     monkeypatch.setattr(gemini_client, "BUSY_RETRY_DELAY", 0)
     with pytest.raises(gemini_client.ModelUnavailable):
         asyncio.run(gemini_client.ask("hi"))
+
+
+@patch("saras.core.modes.discovery.ask", new_callable=AsyncMock,
+       side_effect=["Docker Basics", EXTRACTION_EN])
+@patch("saras.core.modes.discovery.research", new_callable=AsyncMock,
+       return_value=GroundedAnswer(BODY_EN, ["Docs - https://docs.docker.com"]))
+def test_discovery_related_uses_topic_not_generic_words(mock_research, mock_ask, vault):
+    write_note("Discovery", "Docker Networking", "Bridge networks.", ["docker"])
+    write_note("Discovery", "Overview of Roman Roads", "Via Appia.", ["history"])
+    result = asyncio.run(discovery.run("Explain what Docker is, an overview"))
+    content = open(result.note_path, encoding="utf-8").read()
+    assert "## Related\n- [[Docker Networking]]" in content
+    assert "Roman Roads" not in content

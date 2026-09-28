@@ -2,9 +2,13 @@
 
 Keyword rules first (cheap, predictable), Gemini classification as fallback.
 """
+import logging
 import re
 
-from saras.integrations.gemini_client import classify_intent
+from saras.core.memory import Turn, format_history
+from saras.integrations.gemini_client import ModelUnavailable, QuotaExceeded, ask, classify_intent
+
+log = logging.getLogger(__name__)
 
 # Checked in this order: the most specific intent wins.
 KEYWORDS = {
@@ -26,7 +30,7 @@ KEYWORDS = {
     "discovery": [
         "research", "explain", "what is", "what are", "how does", "how do", "teach me",
         "investiga", "explica", "explícame", "explicame", "qué es", "que es", "qué son",
-        "cómo funciona", "como funciona", "enséñame", "enseñame",
+        "cómo funciona", "como funciona", "enséñame", "enseñame","quiero aprender sobre",
     ],
 }
 
@@ -45,7 +49,7 @@ def match_keywords(message: str) -> str | None:
     return None
 
 
-async def route(message: str) -> list[tuple[str, str]]:
+async def route(message: str, history: list[Turn] | None = None) -> list[tuple[str, str]]:
     """Return an ordered list of (mode, text) steps to run."""
     parts = [p.strip(" ,.;") for p in _CHAIN_SPLIT.split(message, maxsplit=1)]
     if len(parts) == 2 and all(parts):
@@ -53,5 +57,29 @@ async def route(message: str) -> list[tuple[str, str]]:
         if first == "discovery" and second == "execution":
             return [("discovery", parts[0]), ("execution", message)]
 
-    mode = match_keywords(message) or await classify_intent(message)
+    mode = match_keywords(message) or await classify_intent(message, format_history(history))
     return [(mode, message)]
+
+
+async def make_standalone(message: str, history: list[Turn] | None) -> str:
+    """Rewrite a follow-up ("¿y en Python?") as a self-contained request.
+
+    Modes search the Vault and the web with the message alone, so they need the
+    subject spelled out. Falls back to the original message if the rewrite fails.
+    """
+    if not history:
+        return message
+    prompt = (
+        "Rewrite the user's latest message as a standalone request, using the conversation "
+        "only to fill in what it refers to (\"it\", \"and in Python?\", \"the second one\"). "
+        "Keep the same language, intent and level of detail; add nothing else. If the "
+        "message already makes sense on its own, return it unchanged. Reply with the "
+        f"rewritten message only.\n\n{format_history(history)}\n\n"
+        f"Latest message: {message}\n\nStandalone message:"
+    )
+    try:
+        rewritten = (await ask(prompt, fast=True)).strip().strip('"\'')
+    except (ModelUnavailable, QuotaExceeded):
+        log.warning("Could not resolve follow-up; using the message as written")
+        return message
+    return rewritten or message

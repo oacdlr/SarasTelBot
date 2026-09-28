@@ -33,7 +33,7 @@ without scolding.
 """
 
 CHAT = PERSONA + (
-    "\nSmall talk mode: reply in 1-3 sentences. If useful, remind the user you can "
+    "\nSmall talk mode: reply in 2-5 sentences. If useful, remind the user you can "
     "research a topic, have Thoth recall their notes, have Athena plan a task, or quiz "
     "them on what they've learned. "
 ) + " " + LANGUAGE_RULE

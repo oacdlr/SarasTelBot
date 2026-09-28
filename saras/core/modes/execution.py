@@ -8,7 +8,9 @@ from saras.integrations.obsidian_vault import note_title, search_notes, write_no
 
 
 
-async def run(message: str, previous: list[ModeResult] | None = None) -> ModeResult:
+async def run(
+    message: str, previous: list[ModeResult] | None = None, save: bool = True
+) -> ModeResult:
     prompt = f"Today is {date.today().isoformat()}.\n\nObjective: {message}"
     earlier = [r for r in previous or [] if r.note_path]
     if earlier:
@@ -16,6 +18,8 @@ async def run(message: str, previous: list[ModeResult] | None = None) -> ModeRes
         prompt += f"\n\nResearch already done for this objective:\n{research_text[:8000]}"
 
     plan = await ask(prompt, system=SYSTEM)
+    if not save:
+        return ModeResult(reply=f"{plan}\n\n🚫 Not saved to Vault (/nosave)")
     title = await ask(
         "Write a short title (max 6 words) for a project plan with this objective, in the "
         f"same language. Reply with the title only.\n\nObjective: {message}",
