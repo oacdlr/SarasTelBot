@@ -5,7 +5,8 @@ import pytest
 from unittest.mock import AsyncMock, patch
 
 from saras.bot.telegram_bot import split_message
-from saras.core.modes import discovery, execution, retrieval
+from saras.core.modes import detail, discovery, execution, retrieval
+from saras.core.modes.base import ModeResult
 from saras.integrations.gemini_client import GroundedAnswer
 from saras.integrations.obsidian_vault import find_concept, upsert_concept, write_note, write_raw_note
 
@@ -238,6 +239,34 @@ def test_execution_writes_checklist(mock_ask, vault):
     assert os.path.basename(result.note_path) == "ML Project.md"
 
 
+@patch("saras.core.modes.execution.ask", new_callable=AsyncMock,
+       side_effect=["- [ ] Ship it", "Kubernetes Rollout"])
+def test_execution_related_knowledge_uses_strict_matching(mock_ask, vault):
+    write_note("Discovery", "Kubernetes basics", "Pods and nodes.", ["kubernetes"])
+    write_note("Discovery", "Cooking pasta", "Mention of kubernetes rollout in passing.", ["food"])
+    result = asyncio.run(execution.run("Help me plan my Kubernetes rollout"))
+    content = open(result.note_path, encoding="utf-8").read()
+    assert "## Related knowledge" in content
+    assert "[[Kubernetes basics]]" in content
+    assert "[[Cooking pasta]]" not in content
+
+
+@patch("saras.core.modes.detail.ask", new_callable=AsyncMock, return_value="Deeper answer.")
+def test_detail_expands_with_earlier_reply_as_context(mock_ask):
+    result = asyncio.run(detail.run("Docker", previous=[ModeResult(reply="Docker runs containers.")]))
+    assert result.reply == "Deeper answer."
+    assert result.note_path is None
+    prompt = mock_ask.await_args.args[0]
+    assert "Topic: Docker" in prompt and "Docker runs containers." in prompt
+
+
+@patch("saras.core.modes.detail.ask", new_callable=AsyncMock, return_value="Deeper answer.")
+def test_detail_without_previous_still_asks(mock_ask):
+    result = asyncio.run(detail.run("Docker"))
+    assert result.reply == "Deeper answer."
+    assert mock_ask.await_args.args[0] == "Topic: Docker"
+
+
 def test_split_message_respects_telegram_limit():
     text = "\n\n".join("x" * 1000 for _ in range(10))
     chunks = split_message(text)
@@ -348,3 +377,27 @@ def test_discovery_related_uses_topic_not_generic_words(mock_research, mock_ask,
     content = open(result.note_path, encoding="utf-8").read()
     assert "## Related\n- [[Docker Networking]]" in content
     assert "Roman Roads" not in content
+
+
+def test_ask_fast_falls_back_to_main_model_when_fast_is_overloaded(monkeypatch):
+    from google.genai import errors
+    from saras.integrations import gemini_client
+
+    calls = []
+
+    class FakeModels:
+        async def generate_content(self, model, **kwargs):
+            calls.append(model)
+            if model == "fast-model":
+                raise errors.ServerError(503, {"error": {"message": "high demand"}})
+            return type("Response", (), {"text": "Main answer."})()
+
+    class FakeClient:
+        aio = type("aio", (), {"models": FakeModels()})()
+
+    monkeypatch.setattr(gemini_client, "_get_client", lambda: FakeClient())
+    monkeypatch.setattr(gemini_client, "BUSY_RETRY_DELAY", 0)
+    monkeypatch.setattr(gemini_client.config, "gemini_model", lambda: "main-model")
+    monkeypatch.setattr(gemini_client.config, "gemini_fast_model", lambda: "fast-model")
+    assert asyncio.run(gemini_client.ask("hi", fast=True)) == "Main answer."
+    assert calls == ["fast-model", "fast-model", "main-model"]

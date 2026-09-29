@@ -23,6 +23,7 @@ _STRINGS = {
         "in_practice": "3. En la práctica / estado actual",
         "comparison": "Comparación",
         "uncertainty": "Incertidumbre y preguntas abiertas",
+        "next_steps": "Qué aprender después",
         "question_callout": "Pregunta",
         "summary_callout": "Respuesta corta",
         "related": "Relacionado",
@@ -42,6 +43,7 @@ _STRINGS = {
         "in_practice": "3. In practice / current state",
         "comparison": "Comparison",
         "uncertainty": "Uncertainty and open questions",
+        "next_steps": "What to learn next",
         "question_callout": "Question",
         "summary_callout": "Short answer",
         "related": "Related",
@@ -113,7 +115,8 @@ def _system_prompt(s: dict) -> str:
         f"## {s['how_it_works']}\n"
         f"## {s['in_practice']}\n"
         f"## {s['comparison']}\n"
-        f"## {s['uncertainty']}\n\n"
+        f"## {s['uncertainty']}\n"
+        f"## {s['next_steps']}\n\n"
         f"- {s['prereq']}: bullets '[[Concept]]: why it's needed'; omit this whole section "
         "if the topic has no real prerequisites.\n"
         f"- {s['key_concepts']}: 2-6 bullets '[[Concept]]: one-line definition'.\n"
@@ -123,7 +126,10 @@ def _system_prompt(s: dict) -> str:
         f"- {s['comparison']}: only include this section, as a Markdown table, if the "
         "question compares two or more options; omit it otherwise.\n"
         f"- {s['uncertainty']}: what the sources leave unclear or disagree on, and open "
-        "questions worth researching further.\n\n"
+        "questions worth researching further.\n"
+        f"- {s['next_steps']}: 2-4 bullets '[[Topic]]: why it's a good next step', most "
+        "natural first. Each is a concrete topic that builds on this one, named like a "
+        "short note title, and not one already listed under prerequisites or key concepts.\n\n"
         "Cite claims with [1], [2]... in the order sources are first used. Be accurate, "
         "don't invent sources or facts, and keep the whole note to about 1-2 screens. "
         + LANGUAGE_RULE

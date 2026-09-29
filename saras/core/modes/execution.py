@@ -4,7 +4,7 @@ from datetime import date
 from saras.core.modes.base import ModeResult
 from saras.core.persona import EXECUTION as SYSTEM
 from saras.integrations.gemini_client import ask
-from saras.integrations.obsidian_vault import note_title, search_notes, write_note
+from saras.integrations.obsidian_vault import find_related, note_title, write_note
 
 
 
@@ -27,7 +27,7 @@ async def run(
     )
 
     links = [note_title(r.note_path) for r in earlier]
-    links += [n.title for n in search_notes(message, limit=3) if n.score >= 3 and n.title not in links]
+    links += [n.title for n in find_related(message, exclude=set(links)) if n.title not in links]
     body = plan
     if links:
         body += "\n\n## Related knowledge\n" + "\n".join(f"- [[{t}]]" for t in links)

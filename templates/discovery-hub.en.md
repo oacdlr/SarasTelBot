@@ -42,6 +42,10 @@ sources: ["{{url 1}}", "{{url 2}}"]
 - {{what sources leave unclear or disagree on}}
 - {{questions still worth researching}}
 
+## What to learn next
+- [[{{Next topic 1}}]]: {{why it's a good next step; most natural first}}
+- [[{{Next topic 2}}]]: {{why it's a good next step}}
+
 ## Related
 - [[{{existing Vault note}}]]
 

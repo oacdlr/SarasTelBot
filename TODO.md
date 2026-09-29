@@ -39,9 +39,9 @@ Last updated: 2026-09-28
 - [x] Make "Saved to Vault" a tappable link that opens the note in Obsidian
 - [x] Conversation memory: last 5 exchanges per chat, forgotten after 45 min idle; used in routing, Chat mode, and to rewrite follow-ups like "¿y en Python?" into standalone requests (in RAM only, lost on restart)
 - [x] Discovery: send a short summary (5–8 lines) + note link instead of the whole note
-- [ ] Commands: `/research`, `/recall`, `/plan` to force a mode (see "Commands to-do" below)
-- [ ] Buttons under answers: "📋 Planear esto", "🔍 Más detalle", "🗑️ No guardar"
-- [ ] Let me correct a wrong mode, and log it to feed router tuning
+- [x] Commands: `/research`, `/recall`, `/plan` to force a mode (see "Commands to-do" below) — all done 2026-09-28
+- [x] Buttons under answers: "📋 Planear esto", "🔍 Más detalle", "🗑️ No guardar" — 2026-09-28. "No guardar" only deletes the Discovery hub note; any Concept notes it created/updated are left as-is (unlike `/nosave`, which skips them upfront) — reverting those safely would mean telling apart concept notes/backlinks this run created from ones that already existed, which isn't done
+- [x] Let me correct a wrong mode, and log it to feed router tuning — 2026-09-28: `/fix` (alias `/mode`) right after a router-chosen answer offers the other modes; picking one re-runs the message in that mode and appends `{ts, message, routed, corrected}` to `logs/router_corrections.jsonl` (gitignored, per-PC). Slash-command and chained (Discovery → Execution) answers aren't fixable
 
 ## Commands to-do
 Slash commands skip the router. The menu is registered from code at startup (`COMMAND_MENU` in `telegram_bot.py`), so BotFather needs no setup: add new commands there.
@@ -50,17 +50,17 @@ Slash commands skip the router. The menu is registered from code at startup (`CO
 - [x] `/last`: re-sends the link to the last note saved
 - [x] `/status`: Gemini quota/fallback state, vault path and note counts, mode counts since start
 - [x] `/nosave`: `/nosave <message>` answers it without writing to the Vault; alone, it arms the next message (send again to cancel)
-- [ ] `/plan <goal>` (alias `/planea`): Execution checklist
-- [ ] `/quiz <topic>`: quiz on your notes
-- [ ] `/help`: lists commands and examples
-- [ ] `/notes [n]`: the n most recent notes, with links (`recent_notes()` already exists in `obsidian_vault.py`)
-- [ ] `/search <word>`: plain keyword search in the vault, no Gemini call
-- [ ] `/clear`: clears the remembered conversation (`ConversationMemory` needs a `clear(chat_id)`)
+- [x] `/plan <goal>` (alias `/planea`): Execution checklist — 2026-09-28
+- [x] `/quiz <topic>`: quiz on your notes — 2026-09-28 (quiz mode already existed, just wasn't wired to a command)
+- [x] `/help`: lists commands and examples — 2026-09-28 (built from `COMMAND_MENU`, stays in sync automatically)
+- [x] `/notes [n]`: the n most recent notes, with links — 2026-09-28 (uses `recent_notes()`, default 5, max 20)
+- [x] `/search <word>`: plain keyword search in the vault, no Gemini call — 2026-09-28 (uses `search_notes()`)
+- [x] `/clear`: clears the remembered conversation — 2026-09-28 (`ConversationMemory.clear(chat_id)` added)
 
 ## Next improvements
 - [x] Discovery "Related": stricter `find_related()` (topic-based query, rarity-weighted title/tag matches, filler words ignored, max 3, skips Execution/Quizzes/templates); replayed against the real vault, see DEV-GUIDE section 8
-- [ ] Execution "Related knowledge" still uses the old `search_notes(...) >= 3` rule; switch it to `find_related()` if it shows the same off-topic links
-- [ ] Tune router keywords from real usage (log misrouted messages)
+- [x] Execution "Related knowledge" now uses `find_related()` instead of the old `search_notes(...) >= 3` rule — 2026-09-28 (existing plan notes keep their old links)
+- [ ] Tune router keywords from real usage (read `logs/router_corrections.jsonl`, filled by `/fix`)
 - [ ] Execution: check off / update checklist items from chat
 - [ ] Retrieval: embeddings index for meaning-based search
 - [ ] Discovery: reuse or update an existing note instead of creating a near-duplicate

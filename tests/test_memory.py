@@ -68,6 +68,20 @@ def test_long_replies_are_clipped():
     assert len(memory.history(1)[0].assistant) == MAX_REPLY_CHARS
 
 
+def test_clear_forgets_only_the_given_chat():
+    memory = ConversationMemory()
+    memory.add(1, "q", "a")
+    memory.add(2, "q", "a")
+    assert memory.clear(1) is True
+    assert memory.history(1) == []
+    assert [t.user for t in memory.history(2)] == ["q"]
+
+
+def test_clear_on_an_unknown_chat_reports_nothing_to_clear():
+    memory = ConversationMemory()
+    assert memory.clear(1) is False
+
+
 def test_format_history():
     assert format_history([]) == ""
     text = format_history(HISTORY)

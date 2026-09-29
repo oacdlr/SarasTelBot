@@ -3,15 +3,24 @@ import os
 import time
 from collections import Counter
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from saras.bot import telegram_bot
 from saras.bot.status import format_status
+from saras.core.memory import ConversationMemory
 from saras.core.modes import discovery, execution, quiz
 from saras.integrations.gemini_client import GeminiHealth, GroundedAnswer
 from saras.integrations.obsidian_vault import count_notes, recent_notes, write_note
 
 from tests.test_modes import BODY_EN, EXTRACTION_EN
+
+
+def _update(text, chat_id=42):
+    """A minimal Update stand-in: enough for command handlers (allowed-check patched out)."""
+    message = MagicMock()
+    message.text = text
+    message.reply_text = AsyncMock()
+    return SimpleNamespace(message=message, effective_chat=SimpleNamespace(id=chat_id))
 
 
 def _files(root) -> list[str]:
@@ -109,3 +118,85 @@ def test_nosave_flag_is_consumed_once():
     telegram_bot.nosave_next.add(42)
     assert telegram_bot._take_save_flag(42) is False
     assert telegram_bot._take_save_flag(42) is True
+
+
+@patch("saras.bot.telegram_bot.is_allowed", return_value=True)
+def test_notes_command_lists_recent_notes(mock_allowed, vault):
+    write_note("Discovery", "A", "x", [])
+    write_note("Execution", "B", "x", [])
+    update = _update("/notes 5")
+    asyncio.run(telegram_bot.notes(update, None))
+    reply = update.message.reply_text.await_args.args[0]
+    assert ">A<" in reply and ">B<" in reply
+
+
+@patch("saras.bot.telegram_bot.is_allowed", return_value=True)
+def test_notes_command_empty_vault(mock_allowed, vault):
+    update = _update("/notes")
+    asyncio.run(telegram_bot.notes(update, None))
+    assert "No notes saved yet" in update.message.reply_text.await_args.args[0]
+
+
+@patch("saras.bot.telegram_bot.is_allowed", return_value=True)
+def test_notes_command_rejects_non_numeric_argument(mock_allowed, vault):
+    update = _update("/notes abc")
+    asyncio.run(telegram_bot.notes(update, None))
+    assert "Usage: /notes" in update.message.reply_text.await_args.args[0]
+
+
+@patch("saras.bot.telegram_bot.is_allowed", return_value=True)
+def test_search_command_lists_matches(mock_allowed, vault):
+    write_note("Discovery", "Docker Basics", "Docker runs containers.", ["docker"])
+    write_note("Discovery", "Unrelated", "Nothing to do with it.", [])
+    update = _update("/search docker")
+    asyncio.run(telegram_bot.search(update, None))
+    reply = update.message.reply_text.await_args.args[0]
+    assert ">Docker Basics<" in reply and "Unrelated" not in reply
+
+
+@patch("saras.bot.telegram_bot.is_allowed", return_value=True)
+def test_search_command_no_matches(mock_allowed, vault):
+    update = _update("/search zzzzz")
+    asyncio.run(telegram_bot.search(update, None))
+    assert "No matches" in update.message.reply_text.await_args.args[0]
+
+
+@patch("saras.bot.telegram_bot.is_allowed", return_value=True)
+def test_search_command_requires_a_query(mock_allowed, vault):
+    update = _update("/search")
+    asyncio.run(telegram_bot.search(update, None))
+    assert "Usage: /search" in update.message.reply_text.await_args.args[0]
+
+
+@patch("saras.bot.telegram_bot.is_allowed", return_value=True)
+def test_clear_command_reports_whether_it_cleared_something(mock_allowed, monkeypatch):
+    monkeypatch.setattr(telegram_bot, "memory", ConversationMemory())
+    telegram_bot.memory.add(42, "hola", "hola")
+
+    update = _update("/clear")
+    asyncio.run(telegram_bot.clear(update, None))
+    assert "cleared" in update.message.reply_text.await_args.args[0]
+    assert telegram_bot.memory.history(42) == []
+
+    update2 = _update("/clear")
+    asyncio.run(telegram_bot.clear(update2, None))
+    assert "Nothing to clear" in update2.message.reply_text.await_args.args[0]
+
+
+@patch("saras.bot.telegram_bot.is_allowed", return_value=True)
+def test_help_command_lists_every_registered_command(mock_allowed):
+    update = _update("/help")
+    asyncio.run(telegram_bot.help_command(update, None))
+    reply = update.message.reply_text.await_args.args[0]
+    for command in telegram_bot.COMMAND_MENU:
+        assert f"/{command.command}" in reply
+
+
+def test_discovery_prompt_asks_for_next_steps_after_uncertainty_in_both_languages():
+    for lang, heading, before in (
+        ("en", "## What to learn next", "## Uncertainty and open questions"),
+        ("es", "## Qué aprender después", "## Incertidumbre y preguntas abiertas"),
+    ):
+        prompt = discovery._system_prompt(discovery._STRINGS[lang])
+        assert heading in prompt
+        assert prompt.index(before) < prompt.index(heading)

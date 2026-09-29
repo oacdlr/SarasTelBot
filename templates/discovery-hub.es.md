@@ -42,6 +42,10 @@ sources: ["{{url 1}}", "{{url 2}}"]
 - {{lo que las fuentes no dejan claro o donde no coinciden}}
 - {{preguntas que quedan por investigar}}
 
+## Qué aprender después
+- [[{{Siguiente tema 1}}]]: {{por qué es un buen siguiente paso; el más natural primero}}
+- [[{{Siguiente tema 2}}]]: {{por qué es un buen siguiente paso}}
+
 ## Relacionado
 - [[{{nota existente del Vault}}]]
 

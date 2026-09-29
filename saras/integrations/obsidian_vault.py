@@ -108,6 +108,15 @@ def write_raw_note(folder: str, title: str, content: str) -> str:
     return path
 
 
+def delete_note(path: str) -> bool:
+    """Delete a note file (e.g. "🗑️ No guardar" on an answer). Returns whether it existed."""
+    try:
+        os.remove(path)
+        return True
+    except FileNotFoundError:
+        return False
+
+
 def note_title(path: str) -> str:
     """The name Obsidian uses for [[wikilinks]]: the filename without .md."""
     return os.path.splitext(os.path.basename(path))[0]

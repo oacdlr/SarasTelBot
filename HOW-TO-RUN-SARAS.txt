@@ -1,0 +1,67 @@
+SARAS — Manual run guide
+=========================
+(Windows / PowerShell)
+
+This is for running the bot by hand, without Claude Code.
+
+1. Open the project folder
+---------------------------
+cd "C:\Users\oscar\Documents\Proyectos\Bloque Flamingo\Saras"
+
+2. Activate the Python virtual environment
+--------------------------------------------
+.venv\Scripts\Activate.ps1
+
+If .venv doesn't exist yet (new PC, or it was deleted):
+    python -m venv .venv
+    .venv\Scripts\Activate.ps1
+    pip install -r requirements.txt
+
+3. Check your .env file
+-------------------------
+Make sure .env exists in the project root (copy .env.example to .env if not)
+and has real values filled in:
+    TELEGRAM_BOT_TOKEN         - from @BotFather on Telegram
+    TELEGRAM_ALLOWED_USER_IDS  - your numeric Telegram ID(s), from @userinfobot
+    GEMINI_API_KEY             - from Google AI Studio (ai.google.dev)
+    GEMINI_MODEL                - optional, defaults to gemini-3.6-flash
+    GEMINI_FAST_MODEL           - optional, defaults to gemini-3.5-flash-lite
+    OBSIDIAN_VAULT_PATH         - path to the SARAS-Vault folder
+
+.env is gitignored — it will NOT be there automatically on a new PC or after
+a fresh clone. See NEW-PC-SETUP.md if you're setting up a new machine.
+
+4. Make sure the bot isn't already running elsewhere
+-------------------------------------------------------
+Only one instance can poll Telegram with the same bot token at a time.
+If it's already running on another PC (or in another terminal here), stop
+it first — otherwise you'll get a 409 conflict error.
+
+5. Run the bot
+----------------
+python -m saras.main
+
+Leave this terminal window open — the bot runs in the foreground and keeps
+polling Telegram for messages. Closing the window stops the bot.
+
+6. Talk to it
+---------------
+Open Telegram and message your bot. Send /start to see what it can do.
+
+7. Stop the bot
+-----------------
+Press Ctrl+C in the terminal running it.
+
+Troubleshooting
+------------------
+- "ModuleNotFoundError" -> the venv isn't activated, or dependencies weren't
+  installed. Re-run step 2's pip install line.
+- Bot doesn't respond -> check TELEGRAM_ALLOWED_USER_IDS includes your
+  Telegram user ID; messages from other users are silently ignored.
+- 409 Conflict error -> the bot is already running somewhere else with the
+  same token. Stop the other instance.
+- Check bot_run.log or bot.log in the project root for recent errors.
+
+Running the tests (optional, no API keys needed)
+----------------------------------------------------
+pytest

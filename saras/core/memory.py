@@ -49,6 +49,10 @@ class ConversationMemory:
         chat.turns.append(Turn(user, assistant[:MAX_REPLY_CHARS]))
         chat.last_active = self._clock()
 
+    def clear(self, chat_id: int) -> bool:
+        """Forget chat_id's remembered turns. Returns whether there was anything to forget."""
+        return self._chats.pop(chat_id, None) is not None
+
     def _live_chat(self, chat_id: int) -> _Chat | None:
         chat = self._chats.get(chat_id)
         if chat and self._clock() - chat.last_active > self._idle_timeout:

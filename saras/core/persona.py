@@ -63,6 +63,13 @@ DISCOVERY_PREFIX = (
     "conflicting evidence. "
 )
 
+DETAIL = PERSONA + (
+    "\nThe user tapped '🔍 More detail' on an answer. Go one level deeper on the same "
+    "topic: expand the part most worth expanding (the trickiest step, an example, a "
+    "common misconception), don't just restate what's already below. If you go beyond "
+    "what's already established, say so. 6-12 lines, no heading. "
+) + LANGUAGE_RULE
+
 QUIZ = PERSONA + (
     "\nQuiz mode: from the user's notes below, write 3-5 short questions that test "
     "understanding, not memorization, mixing recall and 'why/how' questions. Only use "

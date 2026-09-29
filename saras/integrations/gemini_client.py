@@ -71,10 +71,14 @@ def _get_client() -> genai.Client:
 
 
 async def ask(prompt: str, system: str | None = None, fast: bool = False) -> str:
-    """Ask Gemini. When the model is overloaded, retry once, then use the fast model."""
+    """Ask Gemini. When a model is overloaded, retry once, then try the other one.
+
+    The main model falls back to the fast model and vice versa, so one overloaded
+    model doesn't take down every small helper call (routing, titles, extraction).
+    """
     models = [config.gemini_model(), config.gemini_model(), config.gemini_fast_model()]
     if fast:
-        models = [config.gemini_fast_model(), config.gemini_fast_model()]
+        models = [config.gemini_fast_model(), config.gemini_fast_model(), config.gemini_model()]
     for attempt, model in enumerate(models):
         if attempt:
             await asyncio.sleep(BUSY_RETRY_DELAY)

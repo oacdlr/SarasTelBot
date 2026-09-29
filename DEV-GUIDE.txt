@@ -1,0 +1,640 @@
+SARAS — Developer guide
+=========================
+What lives where, and how to change the common things by hand.
+
+CONTENTS
+1. Project layout
+2. Vault folder structure
+3. Change API keys / settings
+4. Add words to the mode-picking dictionary (router)
+5. Change SARAS's personality (system prompts)
+6. Change the note templates (Discovery, Execution, Quiz)
+7. How Concept notes avoid duplicates
+8. How SARAS decides which notes are "Related" / relevant
+9. Change who is allowed to talk to the bot
+10. Add or change Telegram bot commands (e.g. /start, /research, /plan, ...)
+11. Answer buttons under Discovery replies (📋 / 🔍 / 🗑️)
+12. Logging and log files
+13. Other things you might want to tweak
+14. Notes on the .backup_prepersona folder
+
+
+1. PROJECT LAYOUT
+--------------------
+Saras/
+  .env                        <- real API keys and settings (gitignored, see section 3)
+  .env.example                <- template for .env, safe to commit
+  requirements.txt            <- Python dependencies
+  templates/                  <- REFERENCE ONLY, see section 6 (not read by the code)
+  saras/
+    main.py                    entry point: `python -m saras.main` calls bot/telegram_bot.py:main()
+    config.py                  reads all settings from .env (section 3)
+    bot/
+      telegram_bot.py          Telegram wiring: whitelist check, slash commands (section 10),
+                                answer-button callbacks (section 11), message loop, error
+                                messages, splitting long replies into chunks
+      formatting.py            converts SARAS's Markdown replies into Telegram HTML
+      status.py                formats the /status reply
+    core/
+      router.py                decides which mode handles a message (section 4)
+      persona.py               SARAS's personality and all system prompts (section 5)
+      memory.py                short-term per-chat conversation memory (ConversationMemory);
+                                also what /clear empties
+      modes/
+        base.py                 ModeResult dataclass shared by every mode
+        chat.py                  small talk, writes nothing to the Vault
+        discovery.py             research mode: builds Discovery + Concepts notes (section 6)
+        execution.py             planning mode: builds Execution checklist notes
+        retrieval.py             answers from existing Vault notes only
+        quiz.py                  builds a quiz from existing Vault notes
+        detail.py                expands a saved answer ("🔍 Más detalle" button); never
+                                  writes to the Vault (section 11)
+    integrations/
+      gemini_client.py          the ONLY module that calls the Gemini API (ask/research/classify_intent)
+      obsidian_vault.py         reads/writes/searches Markdown notes in the Vault
+  tests/                       pytest suite; Gemini and Telegram are mocked
+
+
+2. VAULT FOLDER STRUCTURE
+--------------------------------
+The Vault (path set by OBSIDIAN_VAULT_PATH, section 3) is an Obsidian
+vault: plain Markdown files with YAML frontmatter, organized by SARAS into
+these top-level folders (created automatically the first time each is
+needed — see _reserve_path() in saras/integrations/obsidian_vault.py):
+
+    Discovery/     one hub note per researched topic, e.g. "Discovery/Kubernetes.md"
+                   Written by saras/core/modes/discovery.py. Frontmatter includes
+                   `type: discovery`, the original question, confidence, tags,
+                   links to the Concept notes it created/reused, and sources.
+                   Body: Question/Short-answer callouts, then Prerequisites, Key
+                   concepts, Foundations, How it works, In practice, Comparison
+                   (optional), Uncertainty, What to learn next, Related, Sources.
+
+    Concepts/      one note per distinct concept, e.g. "Concepts/Container.md"
+                   Written/updated by upsert_concept() in obsidian_vault.py,
+                   called from discovery.py. Frontmatter includes `type: concept`,
+                   status, aliases, tags. Body: definition, why it matters, example,
+                   and an "Appears in" section that accumulates backlinks to every
+                   Discovery hub note that referenced this concept (see section 7 —
+                   a concept note is reused across topics, not recreated each time).
+
+    Execution/     one checklist note per plan, e.g. "Execution/Ship v2.md"
+                   Written by saras/core/modes/execution.py. Frontmatter tag
+                   `execution`. Body: the Markdown checklist Gemini wrote, plus a
+                   "## Related knowledge" section linking Discovery/Concept notes
+                   used as context.
+
+    Quizzes/       one note per quiz run, e.g. "Quizzes/Quiz - Kubernetes.md"
+                   Written by saras/core/modes/quiz.py. Frontmatter tag `quiz`.
+                   Body: "## Questions", "## Answers", "## Review" (per the QUIZ
+                   prompt in persona.py), plus "## Source notes" linking back to
+                   whichever notes the quiz was drawn from. Quizzes/ notes are
+                   themselves excluded when picking source notes for a new quiz
+                   (see the `!= "Quizzes"` folder check in quiz.py), so SARAS
+                   doesn't quiz you on old quizzes.
+
+All four folders share the same low-level file mechanics (safe filenames,
+YAML escaping, "(2)"/"(3)" suffixes on name collisions, never overwriting an
+existing file) from write_note()/write_raw_note()/_reserve_path() in
+obsidian_vault.py — see section 6 for how to change note structure, and
+section 8 for how notes get cross-linked/found again later.
+
+Nothing else in the vault (e.g. any folders or notes you create yourself in
+Obsidian) is touched by SARAS, except that search_notes() (section 8) scans
+the WHOLE vault, not just these four folders — so your own manual notes are
+just as searchable/quotable by Retrieval and Quiz as SARAS's own notes.
+
+
+3. CHANGE API KEYS / SETTINGS
+--------------------------------
+File: .env (project root)
+
+This is the only file with real secrets. It's gitignored — never commit it,
+and remember it does NOT sync between the two PCs via git (see CLAUDE.md /
+NEW-PC-SETUP.md — change it by hand on both machines).
+
+Keys:
+    TELEGRAM_BOT_TOKEN          - bot token from @BotFather
+    TELEGRAM_ALLOWED_USER_IDS   - comma-separated Telegram user IDs (section 9)
+    GEMINI_API_KEY              - from Google AI Studio (ai.google.dev)
+    GEMINI_MODEL                - main model, e.g. gemini-3.6-flash
+    GEMINI_FAST_MODEL           - cheap/fast model used for routing, titles, chat, quiz labeling
+    OBSIDIAN_VAULT_PATH         - absolute path to the SARAS-Vault folder
+
+How it's loaded: saras/config.py calls load_dotenv() once at import time,
+then each setting is read lazily via a small function (telegram_bot_token(),
+gemini_model(), etc). If you add a new setting:
+  1. Add it to .env and .env.example.
+  2. Add a getter function in config.py (copy an existing one — required
+     settings use _required(), optional ones fall back to a default like
+     gemini_model() does).
+  3. Import and call that getter wherever you need the value — don't read
+     os.environ directly elsewhere in the codebase.
+
+GEMINI_MODEL / GEMINI_FAST_MODEL are optional; if blank or unset, the
+defaults in config.py (DEFAULT_GEMINI_MODEL, DEFAULT_GEMINI_FAST_MODEL) are
+used.
+
+
+4. ADD WORDS TO THE MODE-PICKING DICTIONARY (ROUTER)
+--------------------------------------------------------
+File: saras/core/router.py, the KEYWORDS dict near the top.
+
+SARAS picks a mode (discovery / retrieval / execution / quiz) in two steps:
+  1. KEYWORDS: a plain dict of {mode: [phrases...]}. If any phrase appears
+     as a whole word/phrase in the message (case-insensitive, Spanish or
+     English), that mode wins immediately — no API call.
+  2. If no keyword matches, it falls back to Gemini classification
+     (classify_intent() in saras/integrations/gemini_client.py), which
+     picks one of: discovery, retrieval, execution, quiz, chat.
+
+To add a trigger phrase for an existing mode, just add a string to the
+matching list in KEYWORDS, e.g.:
+
+    "execution": [
+        ...
+        "make a plan for",   # <- new phrase
+    ],
+
+Rules:
+  - Use lowercase; matching lowercases the message first.
+  - Phrases match as whole words (regex word boundaries), so "due" won't
+    accidentally match inside "subdued".
+  - Dict order matters: quiz is checked first, then retrieval, execution,
+    discovery — so if a phrase could plausibly fit two modes, put it under
+    whichever mode should win, and place that mode earlier in KEYWORDS if
+    needed.
+  - If NO keyword matches, chat is the fallback default only after Gemini
+    classification also can't find a better label (see classify_intent's
+    docstring in gemini_client.py) — you don't need to keep chat's keyword
+    list, it doesn't have one.
+
+To change the "and then" chaining behavior (e.g. "research X and then plan
+Y" -> Discovery then Execution), see _CHAIN_SPLIT and the chaining logic in
+route() further down the same file.
+
+
+5. CHANGE SARAS'S PERSONALITY (SYSTEM PROMPTS)
+---------------------------------------------------
+File: saras/core/persona.py — this is the ONE file that defines who SARAS is.
+
+Structure:
+  - PERSONA: the shared base prompt (identity, the Thoth/Athena "circle",
+    voice/tone rules, core principles). Every mode's prompt starts with this,
+    so editing PERSONA changes SARAS everywhere at once.
+  - CHAT, RETRIEVAL, EXECUTION, QUIZ: PERSONA + mode-specific instructions
+    (what Thoth/Athena are doing, output format, etc).
+  - DISCOVERY_PREFIX: NOT built on PERSONA — Discovery mode writes directly
+    into a Vault note, so its prompt deliberately avoids roleplay/greetings/
+    first person; only tone words carry over.
+  - LANGUAGE_RULE (imported from gemini_client.py): appended to most prompts
+    so SARAS replies in the same language the user wrote in.
+
+To change SARAS's tone, voice, name, or the Thoth/Athena framing: edit the
+PERSONA string. To change how she behaves in ONE mode only (e.g. make Quiz
+mode ask more questions), edit that mode's constant instead (QUIZ, EXECUTION,
+etc) — leave PERSONA alone so the change doesn't leak into other modes.
+
+Each mode file imports its prompt from here, e.g.:
+    saras/core/modes/chat.py:      from saras.core.persona import CHAT as SYSTEM
+    saras/core/modes/execution.py: from saras.core.persona import EXECUTION as SYSTEM
+That's the only place mode behavior/wording is wired up — you don't need to
+touch the mode .py files just to change wording, only persona.py.
+
+Note: saras/persona_draft.py at the project root is a separate scratch/draft
+file, not imported by the running bot — don't edit it expecting it to affect
+behavior; edit saras/core/persona.py.
+
+
+6. CHANGE THE NOTE TEMPLATES (Discovery, Execution, Quiz)
+--------------------------------------------------------------
+IMPORTANT: the templates/*.md files (discovery-hub.*.md, concept.*.md) are
+REFERENCE DOCUMENTATION ONLY — the running code does NOT read them. The
+actual note structure is generated in Python. Editing the .md files in
+templates/ has no effect on what the bot writes; keep them in sync by hand
+if you want them to stay accurate as documentation.
+
+Where each note type is actually built:
+
+  Discovery hub note + Concept notes -> saras/core/modes/discovery.py
+    - _STRINGS dict: section headings and vocabulary, per language (es/en).
+      Change a heading's wording here (e.g. rename "Key concepts" /
+      "Conceptos clave").
+    - _system_prompt(): the instructions sent to Gemini describing which
+      sections to write and in what order. If you add/remove/reorder a
+      section, update both _STRINGS (if it needs a new heading string) and
+      _system_prompt().
+    - _build_hub_content(): assembles the actual frontmatter + callouts +
+      body for the hub note (Discovery/<title>.md).
+    - _build_concept_content(): assembles a Concepts/<name>.md note
+      (definition, why it matters, example, appears-in backlinks, sources).
+    - Also update templates/discovery-hub.en.md / .es.md and
+      templates/concept.en.md / .es.md to match, so the reference docs
+      don't go stale.
+
+  Execution checklist note -> saras/core/modes/execution.py
+    - SYSTEM (imported from persona.py's EXECUTION) controls the checklist
+      format/instructions sent to Gemini.
+    - The note body is just Gemini's plan output plus a "## Related
+      knowledge" section of linked notes; there's no separate template file
+      for Execution. To change structure, edit persona.py's EXECUTION prompt.
+
+  Quiz note -> saras/core/modes/quiz.py
+    - QUIZ prompt (persona.py) controls the Q&A format ("## Questions" /
+      "## Answers" / "## Review").
+    - quiz.py assembles the note with a "## Source notes" section appended;
+      to change the on-disk structure, edit both the QUIZ prompt and quiz.py.
+
+Frontmatter/filename mechanics that apply to ALL note types (title
+sanitizing, YAML escaping, never overwriting existing files, numbering
+duplicates "(2)", "(3)"...) live in saras/integrations/obsidian_vault.py
+(write_note, write_raw_note, safe_title, _reserve_path) — change those only
+if you want to affect every note type at once (e.g. a new frontmatter field
+on every note).
+
+Tag language: `tags:` on Discovery/Concept notes come from Gemini, via
+_EXTRACTION_SYSTEM in discovery.py's extraction prompt — it explicitly tells
+Gemini to always write tags in English ("ALWAYS in English regardless of the
+text's language"), even though the note BODY itself follows the user's
+language (Spanish notes get Spanish bodies with English tags). This exists
+because tags used to come out in whatever language the note was, which
+caused duplicate/inconsistent tags across the vault (e.g. "cafe" and
+"coffee" both existing). Execution and Quiz notes don't have this problem —
+their tags are hardcoded ("execution", "quiz") in execution.py/quiz.py, not
+LLM-generated. If you ever see a non-English tag appear again, it means
+Gemini didn't follow that instruction for that one note; fix it by hand in
+the note's frontmatter (there's no automatic tag-language enforcement after
+the note is written).
+
+
+7. HOW CONCEPT NOTES AVOID DUPLICATES
+------------------------------------------
+When Discovery mode extracts concepts from a researched topic (e.g. a note
+on "Kubernetes" mentions the concept "Container"), SARAS doesn't just create
+a new Concepts/ note every time — it tries to reuse an existing one first,
+so you don't end up with "Container.md", "Container (2).md", "Containers.md"
+scattered across the vault.
+
+File: saras/integrations/obsidian_vault.py, functions find_concept() and
+upsert_concept(); called from saras/core/modes/discovery.py's run().
+
+How matching works, in find_concept(name):
+  1. The vault's Concepts/ folder is listed (only .md files).
+  2. Accents are stripped and both sides lowercased for comparison.
+  3. First pass: does any existing note's FILENAME (title) match `name`
+     exactly (case/accent-insensitive)? e.g. "container" matches
+     "Container.md".
+  4. Second pass (only if no filename matched): does any existing note's
+     frontmatter `aliases: [...]` list contain a match? This is why
+     discovery.py's extraction step also asks Gemini for aliases per
+     concept — a concept referred to as "k8s" elsewhere can still resolve
+     to the "Kubernetes" concept note if "k8s" is listed as an alias.
+
+Then upsert_concept(name, aliases, content, backlink_heading, backlink_line)
+in discovery.py's run() ties it together:
+  - It calls find_concept(name); if nothing matches, it also tries
+    find_concept() on each of the extracted aliases before giving up.
+  - If an existing note IS found: SARAS does NOT overwrite it or touch its
+    content — it only appends one line (backlink_line, normally
+    "- [[<hub title>]]") under the "## Appears in" heading (backlink_heading),
+    via append_under_heading(), and only if that exact line isn't already
+    there (so revisiting the same topic twice doesn't duplicate the
+    backlink).
+  - If nothing matches: a brand-new Concepts/<name>.md note is written from
+    scratch via write_raw_note() (see section 6 for its structure).
+
+Consequences worth knowing when you touch this:
+  - A concept note's own content (definition, why-it-matters, example) is
+    only ever written ONCE, at creation. Later Discovery runs that resolve
+    to the same concept will NOT refresh/update that content, even if the
+    new research phrases it better — they only add a backlink. If you want
+    "refresh existing concept content" behavior, that logic doesn't exist
+    yet and would need to be added to upsert_concept().
+  - Renaming a Concepts/*.md file by hand in Obsidian breaks title-based
+    matching for that concept going forward (find_concept() would no longer
+    find it by its old name) unless the old name is added to its `aliases:`
+    frontmatter.
+  - Matching is exact (post accent-stripping/lowercasing) — no fuzzy
+    matching, plurals, or typo tolerance. "Container" and "Containers"
+    are treated as different concepts unless one is listed as an alias of
+    the other.
+
+
+8. HOW SARAS DECIDES WHICH NOTES ARE "RELATED" / RELEVANT
+----------------------------------------------------------------
+This is plain keyword scoring, not embeddings/semantic search — no AI call
+is involved. There are two functions in saras/integrations/obsidian_vault.py:
+
+  - search_notes(): the general search behind Retrieval's note lookup and
+    Quiz's source-note lookup.
+  - find_related(): a stricter version for the "## Related" section of
+    new Discovery notes and Execution's "Related knowledge". See "Discovery's Related section" below.
+
+How it works, step by step:
+  1. keywords(query) breaks the search text into lowercase words, strips
+     accents, and drops anything in STOPWORDS (common English/Spanish filler
+     words like "the", "el", "how", "qué").
+  2. Every .md file in the vault is scanned (folders starting with "."  are
+     skipped, e.g. .obsidian, .trash).
+  3. For each remaining keyword, a note earns points:
+        +3   if the term appears as a WHOLE WORD in the note's title or an
+              alias (frontmatter `aliases: [...]`)
+        +2   if the term is one of the note's tags
+        +1, plus up to +0.5 more (frequency-weighted, capped at 5 hits)
+              if the term appears as a whole word in the note's body
+     "Whole word" is enforced with a regex word-boundary check
+     (_word_pattern() in obsidian_vault.py), not a plain substring test.
+     This matters a lot for short terms: without it, a query keyword like
+     "ia" (from "IA"/"Agente de IA") would count as a hit inside ANY word
+     that happens to contain those two letters — "tecnología",
+     "inteligencia", "memoria", "historia", café-related notes, Greek-
+     mythology notes, anything — because Python's `"ia" in text` is a
+     substring check. That bug used to make totally unrelated notes (a
+     French-press coffee guide, mythology notes) show up as "related" to
+     AI-agent notes purely from body-text noise. If related-notes results
+     ever look wrong again, check whether this word-boundary check has
+     regressed back to a plain substring test before anything else.
+  4. A small recency boost (up to +1.0, linearly decaying over ~365 days
+     since the file was last modified) is added on top — a newer note edges
+     out an equally-matching older one.
+  5. Notes that scored 0 are dropped. The rest are sorted by score,
+     descending, and the top `limit` are returned.
+
+Where the results get filtered further, per caller:
+  - Discovery ("## Related" section) does NOT use search_notes(); see the
+    next subsection.
+  - Retrieval (which notes to answer from) — saras/core/modes/retrieval.py:
+        MIN_SCORE = 2.0
+  - Quiz (which notes to quiz on) — saras/core/modes/quiz.py:
+        MIN_SCORE = 2.0
+
+Discovery's Related section — find_related() (added 2026-09-28)
+  search_notes() adds up points for every query word, so a long query full of
+  generic words ("guía", "definición", "cómo funciona") used to link
+  unrelated notes (Everest -> coffee, Odiseo -> Claude Code). find_related()
+  is stricter:
+  1. The query is the TOPIC (hub title + concept names + tags from the
+     extraction step), not the raw chat message. Built in discovery.py.
+  2. Words in _TITLE_FILLER ("guía", "overview", "funciona"...) are ignored.
+  3. Only title / alias / tag matches count. Body mentions are a tiny
+     tie-break and can never qualify a note on their own.
+  4. Each shared word is weighted by rarity across the vault (0-1): a word in
+     one note's title is worth 3, a word half the vault shares is worth ~0.
+     The vault size used for this is floored at _RELATED_MIN_POOL (30) so a
+     young vault doesn't call every word common.
+  5. A note is listed only if its summed score >= RELATED_MIN_SCORE (2.0) and
+     at least one shared word has weight >= RELATED_MIN_TERM_WEIGHT (0.5).
+  6. A single shared word counts only if it's in the note's real TITLE; via
+     an alias or tag alone ("State" in the alias "State Graph") it needs a
+     second shared word.
+  7. Execution/, Quizzes/ and templates/ are never candidates, and the
+     concepts the hub already lists are excluded. At most 3 links.
+  To tune: edit RELATED_MIN_SCORE / RELATED_MIN_TERM_WEIGHT / _TITLE_FILLER /
+  _RELATED_SKIP_FOLDERS in obsidian_vault.py. A subject with many notes makes
+  its own keyword "common", so clusters link through several shared words
+  (title word + tags), not one. A word that keeps producing bad links (a
+  generic word the rarity weighting can't catch) belongs in _TITLE_FILLER.
+
+To tune relatedness:
+  - Raise/lower retrieval.py/quiz.py's MIN_SCORE to make matching
+    stricter/looser (Discovery: see find_related() above).
+  - Add more filler words to STOPWORDS in obsidian_vault.py if searches keep
+    matching on noise words.
+  - Adjust the +3/+2/+1 weights in search_notes() if you want, say, tags to
+    matter more than body text.
+  - There's no embedding/vector similarity here (the README lists that as a
+    known v1 limitation) — a note about a very similar concept phrased with
+    different words won't be found unless it shares tags or wording.
+
+
+9. CHANGE WHO IS ALLOWED TO TALK TO THE BOT
+------------------------------------------------
+File: .env, key TELEGRAM_ALLOWED_USER_IDS (comma-separated numeric Telegram
+user IDs, get yours from @userinfobot on Telegram).
+
+Enforced in saras/bot/telegram_bot.py:is_allowed(), checked at the top of
+every message and the /start command. Messages from anyone else are
+silently ignored (logged as a warning, no reply sent) — this is
+intentional, don't change it to auto-reply to strangers.
+
+
+10. ADD OR CHANGE TELEGRAM BOT COMMANDS (e.g. /start, /research, /plan, ...)
+----------------------------------------------------------------------
+File: saras/bot/telegram_bot.py
+
+Everything about how SARAS reacts to a "/command" lives in this one file.
+Three things are involved for each command: the async handler function, the
+line that registers it with the Telegram app, and (to show up in Telegram's
+"/" menu) an entry in COMMAND_MENU.
+
+Current commands, for reference only — telegram_bot.py's COMMAND_MENU list
+is the source of truth, this will go stale: /start, /research (/investiga),
+/recall (/recuerda), /plan (/planea), /quiz, /notes [n], /search <word>,
+/last, /fix (/mode), /nosave, /clear, /status, /help.
+
+Two patterns, depending on what the command does:
+
+  a) Forces one of the existing modes (Discovery/Retrieval/Execution/Quiz),
+     skipping the router entirely — what /research, /recall, /plan and
+     /quiz do, via the shared _mode_command(mode, usage) factory:
+         app.add_handler(CommandHandler(
+             ["plan", "planea"], _mode_command("execution", "Usage: /plan <goal>")))
+     _mode_command() builds a handler that checks is_allowed(), reads the
+     text after the command with command_args(update) — NOT context.args:
+     command_args() keeps line breaks (so a multi-line /research request
+     works), while context.args is Telegram's whitespace-split word list
+     and would mangle one — shows `usage` if empty, and calls
+         respond(update, text, force_mode=mode, save=_take_save_flag(...))
+     respond() is the same function ordinary router-dispatched messages go
+     through; force_mode just skips the route() call. Aliases (/research
+     and /investiga doing the same thing) are a list as CommandHandler's
+     first argument, as shown above.
+
+  b) Replies directly without going through a mode — /start, /last,
+     /status, /notes, /search, /clear, /help, /nosave. Write a plain async
+     handler, same shape as /start:
+         async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+             if not is_allowed(update):
+                 return
+             await update.message.reply_text("...whatever SARAS should say...")
+     Always keep the `is_allowed(update)` check first (section 9).
+
+To add a new command:
+  1. Write the handler (pattern a or b above) anywhere near the others.
+  2. Register it in main():
+         app.add_handler(CommandHandler("mycommand", my_handler))
+     It just needs to be added before the generic
+     MessageHandler(filters.TEXT & ~filters.COMMAND, ...) at the bottom,
+     which already excludes anything starting with "/" — order relative to
+     other command handlers doesn't matter.
+  3. Add a BotCommand("mycommand", "description") entry to COMMAND_MENU
+     (near the bottom of the file) so it shows up in Telegram's "/"
+     autocomplete. This is the ONLY step needed for that menu — SARAS
+     registers it with Telegram itself at startup (register_commands(),
+     wired via ApplicationBuilder's post_init). There is NO manual
+     @BotFather /setcommands step; BotFather needs no setup at all.
+  4. /help is built FROM COMMAND_MENU automatically (it just formats each
+     entry as "/command — description"), so step 3 alone keeps /help
+     accurate too — you don't need to touch help_command() itself.
+
+
+11. ANSWER BUTTONS UNDER DISCOVERY REPLIES (📋 / 🔍 / 🗑️) (added 2026-09-28)
+----------------------------------------------------------------------------
+Files: saras/bot/telegram_bot.py (state + wiring), saras/core/modes/detail.py
+(the "more detail" mode), saras/integrations/obsidian_vault.py:delete_note()
+
+What the user sees: whenever a Discovery answer actually gets saved to the
+Vault (i.e. not under /nosave), the message ends with three inline buttons:
+  📋 Planear esto   -> Execution mode on the same topic, chained with the
+                        Discovery answer as context; saves a checklist note.
+  🔍 Más detalle    -> asks Gemini to go one level deeper on the same topic,
+                        using the saved answer as context; reply only, never
+                        written to the Vault.
+  🗑️ No guardar     -> deletes the Discovery hub note that was just saved.
+
+How it's wired:
+  - PendingAnswer (a small dataclass) + the module-level `pending_answers`
+    dict (chat_id -> PendingAnswer) hold the one active answer-with-buttons
+    per chat — same in-memory/RAM-only pattern as `nosave_next` and
+    ConversationMemory (section 1): nothing persisted, lost on restart.
+  - respond() builds the keyboard (_answer_keyboard()) and stores the
+    PendingAnswer only when the LAST step it ran was "discovery" AND that
+    step actually wrote a note (new_results[-1].note_path is set) AND
+    `save` was True. Any other mode or outcome sends no buttons.
+  - Each PendingAnswer carries a fresh `answer_id` (from the module-level
+    `_answer_seq` counter) embedded in the buttons' callback_data
+    ("ans:<action>:<id>"). Tapping a button checks that id against
+    pending_answers[chat_id]; a mismatch (a newer answer replaced it, or
+    the bot restarted) shows "no longer available" instead of acting on
+    stale data. Buttons are one-shot: any tap immediately strips the
+    keyboard from that message (edit_message_reply_markup(reply_markup=
+    None)) and pops the pending_answers entry, whichever action was taken.
+  - answer_button() is the CallbackQueryHandler, registered with
+    pattern=r"^ans:" so it only ever matches SARAS's own buttons. It reuses
+    is_allowed(update) as-is — Update.effective_user resolves correctly
+    for callback-query updates too, no separate whitelist check needed.
+  - "Planear esto" and "Más detalle" both call respond() again, passing
+    force_mode plus a new `previous=[pending.result]` argument. respond()
+    was extended with that `previous` parameter specifically for this: it
+    seeds the mode call's context (so execution.run()/detail.run() can see
+    the earlier Discovery answer, the same way "Investiga X y luego
+    planea Y" chaining already worked) WITHOUT repeating that earlier
+    answer's text in the new reply — see the `results` vs `new_results`
+    split inside respond(). Since respond() only needs an object shaped
+    like `.message` / `.effective_chat.id`, the callback handler builds a
+    minimal SimpleNamespace(message=query.message, effective_chat=...)
+    rather than a real Update (a callback-query Update has no
+    update.message; the message the buttons are attached to is
+    update.callback_query.message).
+  - detail.py is a mode module like the others (same
+    run(message, previous, save) signature, registered in MODES) but is
+    NOT reachable through the router/KEYWORDS — only
+    respond(..., force_mode="detail", ...) reaches it, from the button
+    handler. It never writes to the Vault (`save` is accepted but ignored,
+    like retrieval.py). Its system prompt is DETAIL in persona.py.
+  - delete_note(path) in obsidian_vault.py is a thin os.remove() wrapper
+    (returns False instead of raising if the file's already gone) — the
+    only new low-level vault function this feature needed.
+
+Known limitation: "No guardar" only deletes the Discovery hub note. Any
+Concept notes that run created or updated (upsert_concept(), section 7) are
+left as-is — telling apart what THIS run touched from pre-existing content
+would need extra bookkeeping that doesn't exist yet. Proactively skipping a
+save with /nosave is still the only way to avoid touching Concepts/ at all
+(discovery.py skips concept extraction entirely when save=False).
+
+To add a fourth button, or change what one does: extend _answer_keyboard()
+with another InlineKeyboardButton, then extend the action handling in
+answer_button() (currently `if action == "drop": ...` then
+`if action not in ("plan", "detail"): ...`) with the new action string and
+its branch.
+
+
+12. LOGGING AND LOG FILES
+------------------------------
+File: saras/bot/telegram_bot.py, inside main():
+    logging.basicConfig(format="%(asctime)s %(levelname)s %(name)s: %(message)s", level=logging.INFO)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+
+SARAS uses Python's standard `logging` module, configured once at startup.
+There's no file handler set up in the code — basicConfig with no `filename`
+sends everything to stderr/stdout. That means bot.log and bot_run.log in the
+project root are NOT written by SARAS itself; they're just whatever a
+terminal session's output was redirected into by hand (e.g. running
+`python -m saras.main > bot_run.log 2>&1`), from different manual runs.
+There's no rotation, size limit, or cleanup of these files — they'll just
+keep growing across a run, and old ones stick around until you delete them
+by hand.
+
+What gets logged, and from where:
+  - "Mode: <discovery|retrieval|execution|quiz|chat|detail>" — one line per
+    step, logged in respond() in telegram_bot.py (the shared function
+    behind handle_message(), the mode-forcing commands, and the answer
+    buttons — section 11). This is the fastest way to confirm which mode
+    handled a message or button tap.
+  - Gemini warnings (empty response / overloaded / quota / search-grounding
+    unavailable) — logged in saras/integrations/gemini_client.py.
+  - Telegram connection problems (network errors) — logged via on_error()
+    in telegram_bot.py, one short WARNING line instead of a full traceback
+    per retry (this is deliberate, since python-telegram-bot retries
+    automatically and a full traceback per retry would be noise).
+  - Unauthorized message attempts — logged as a WARNING in
+    handle_message()/start(), via is_allowed() (section 9). (Unauthorized
+    button taps are silently ignored instead, no log line — see section 11.)
+  - Any other unhandled exception while processing a message — logged with
+    a full traceback via log.exception(...) in respond()'s bare
+    `except Exception` block, then a generic error reply is sent to the user
+    (see section 13 for that reply text).
+  - Noisy INFO-level logs from the `httpx` library (used internally by the
+    Telegram client) are suppressed down to WARNING by the
+    logging.getLogger("httpx").setLevel(...) line, to keep the log
+    readable; "google_genai.models: AFC is enabled..." lines you'll see
+    a lot of come from the Gemini SDK itself, not SARAS code, and are
+    harmless.
+
+To change logging behavior:
+  - Change the format or level (e.g. to logging.DEBUG for more detail):
+    edit the logging.basicConfig(...) call above.
+  - Write logs to an actual file automatically instead of relying on shell
+    redirection: pass `filename="bot.log"` to logging.basicConfig(), or add
+    a logging.FileHandler — currently nothing does this, so log capture is
+    entirely up to how you launch the process.
+  - Quiet down or add more of the "google_genai" / "httpx" logger noise:
+    add another logging.getLogger("<name>").setLevel(...) line next to the
+    existing httpx one.
+  - Add a new log line of your own in any mode or integration: just
+    `import logging; log = logging.getLogger(__name__)` at the top of the
+    file (existing modules already do this) and call log.info(...) /
+    log.warning(...) / log.exception(...) where useful.
+
+
+13. OTHER THINGS YOU MIGHT WANT TO TWEAK
+--------------------------------------------
+  - /start command text (what SARAS says on first contact): saras/bot/
+    telegram_bot.py, the `start()` function.
+  - Error messages shown to the user (quota exceeded, model overloaded,
+    network error, unexpected exception): saras/bot/telegram_bot.py, the
+    except blocks inside respond().
+  - How long replies get split into multiple Telegram messages: TELEGRAM_LIMIT
+    / CHUNK_LIMIT constants at the top of telegram_bot.py.
+  - Markdown -> Telegram HTML conversion (bold, links, etc): saras/bot/
+    formatting.py.
+  - How notes are matched by keyword search (Retrieval/Quiz "which notes are
+    relevant"): saras/integrations/obsidian_vault.py, search_notes() and the
+    STOPWORDS set (words ignored when scoring relevance — add more stopwords
+    here if searches feel noisy).
+  - Discovery's "Related" and Execution's "Related knowledge" links: find_related() in obsidian_vault.py.
+  - Minimum relevance score before Retrieval/Quiz will answer from a note:
+    MIN_SCORE constants at the top of saras/core/modes/retrieval.py and
+    quiz.py.
+  - Gemini retry/fallback behavior (overloaded model, quota exceeded):
+    saras/integrations/gemini_client.py, the ask() and research() functions.
+
+
+14. NOTES ON THE .backup_prepersona FOLDER
+-----------------------------------------------
+saras/.backup_prepersona/ is a snapshot of the code from before the persona
+system was added. It is NOT imported or run by anything — it exists purely
+as a backup/reference. Don't edit it expecting any effect, and don't be
+confused if you see older-looking versions of router.py, discovery.py, etc
+in there.

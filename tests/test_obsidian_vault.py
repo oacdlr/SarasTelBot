@@ -1,3 +1,5 @@
+import os
+
 from saras.integrations import obsidian_vault
 
 
@@ -11,6 +13,16 @@ def test_write_and_search_note(vault):
 def test_title_with_windows_invalid_chars(vault):
     path = obsidian_vault.write_note("Discovery", 'What is "RAG"? A/B: test*', "body", [])
     assert obsidian_vault.note_title(path) == "What is RAG A B test"
+
+
+def test_delete_note_removes_the_file(vault):
+    path = obsidian_vault.write_note("Discovery", "Docker", "body", [])
+    assert obsidian_vault.delete_note(path) is True
+    assert not os.path.exists(path)
+
+
+def test_delete_note_missing_file_returns_false(vault):
+    assert obsidian_vault.delete_note(str(vault / "Discovery" / "Nope.md")) is False
 
 
 def test_never_overwrites_existing_note(vault):
