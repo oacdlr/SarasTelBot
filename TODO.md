@@ -1,6 +1,6 @@
 # SARAS: To-do
 
-Last updated: 2026-09-28
+Last updated: 2026-10-02
 
 ## Done
 - [x] Read the project docs and plan v1 (guide + fixes)
@@ -41,7 +41,7 @@ Last updated: 2026-09-28
 - [x] Discovery: send a short summary (5–8 lines) + note link instead of the whole note
 - [x] Commands: `/research`, `/recall`, `/plan` to force a mode (see "Commands to-do" below) — all done 2026-09-28
 - [x] Buttons under answers: "📋 Planear esto", "🔍 Más detalle", "🗑️ No guardar" — 2026-09-28. "No guardar" only deletes the Discovery hub note; any Concept notes it created/updated are left as-is (unlike `/nosave`, which skips them upfront) — reverting those safely would mean telling apart concept notes/backlinks this run created from ones that already existed, which isn't done
-- [x] Let me correct a wrong mode, and log it to feed router tuning — 2026-09-28: `/fix` (alias `/mode`) right after a router-chosen answer offers the other modes; picking one re-runs the message in that mode and appends `{ts, message, routed, corrected}` to `logs/router_corrections.jsonl` (gitignored, per-PC). Slash-command and chained (Discovery → Execution) answers aren't fixable
+- [x] Let me correct a wrong mode, and log it to feed router tuning — 2026-09-28: `/fix` (alias `/mode`) right after a router-chosen answer offers the other modes; picking one re-runs the message in that mode and appends `{ts, message, routed, corrected}` to `logs/router_corrections.jsonl` (gitignored, per-PC). Slash-command and chained (Discovery → Execution) answers aren't fixable. 2026-10-01: the redo keeps the original `/nosave` flag, replaces the misrouted turn in conversation memory, and `/fix` only applies to the latest answer
 
 ## Commands to-do
 Slash commands skip the router. The menu is registered from code at startup (`COMMAND_MENU` in `telegram_bot.py`), so BotFather needs no setup: add new commands there.
@@ -63,8 +63,9 @@ Slash commands skip the router. The menu is registered from code at startup (`CO
 - [ ] Tune router keywords from real usage (read `logs/router_corrections.jsonl`, filled by `/fix`)
 - [ ] Execution: check off / update checklist items from chat
 - [ ] Retrieval: embeddings index for meaning-based search
-- [ ] Discovery: reuse or update an existing note instead of creating a near-duplicate
+- [x] Discovery: reuse an existing note instead of creating a near-duplicate — 2026-10-01: a lone research request on a topic that already has a hub (matched on its question/title words, `find_discovery_hub()`) gets that hub's link and short answer, no research call; buttons "📋 Planear esto", "🔍 Más detalle", "🔎 Investigar de nuevo" (runs it anyway). Updating the old hub in place is not done
 - [ ] Run SARAS 24/7 (Windows startup task or a small always-on machine)
+- [x] Code review 2026-09-30 (`review to-do.md`): sessions 1–4 done; session 2 checked on Telegram, optional checks for the rest in `telegram-checks.md`; session 5 open — 2026-10-02: answer buttons and `/fix` reuse the rewritten request (no second `make_standalone` call); search skips `templates/`, Retrieval/Quiz filter on relevance without the recency boost, Quiz skips past quizzes; Execution/Quiz notes get `type:` in frontmatter; one concept-index scan per Discovery run
 
 ## Later / blocked
 - [ ] NotebookLM integration (blocked: no public API yet)

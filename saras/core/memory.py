@@ -49,6 +49,14 @@ class ConversationMemory:
         chat.turns.append(Turn(user, assistant[:MAX_REPLY_CHARS]))
         chat.last_active = self._clock()
 
+    def drop_last(self, chat_id: int) -> bool:
+        """Forget chat_id's most recent turn. Returns whether there was one to forget."""
+        chat = self._live_chat(chat_id)
+        if not chat or not chat.turns:
+            return False
+        chat.turns.pop()
+        return True
+
     def clear(self, chat_id: int) -> bool:
         """Forget chat_id's remembered turns. Returns whether there was anything to forget."""
         return self._chats.pop(chat_id, None) is not None

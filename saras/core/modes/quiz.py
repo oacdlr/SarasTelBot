@@ -6,7 +6,7 @@ from saras.core.persona import QUIZ
 from saras.integrations.gemini_client import ask
 from saras.integrations.obsidian_vault import note_title, search_notes, write_note
 
-MIN_SCORE = 2.0
+MIN_SCORE = 2.0  # on relevance, like Retrieval
 MAX_NOTE_CHARS = 5000
 
 _TOPIC_NOISE = re.compile(
@@ -26,10 +26,9 @@ async def run(
     message: str, previous: list[ModeResult] | None = None, save: bool = True
 ) -> ModeResult:
     topic = _TOPIC_NOISE.sub(" ", message).strip(" ?.!,") or message
-    notes = [
-        n
-        for n in search_notes(topic, limit=4)
-        if n.score >= MIN_SCORE and not n.path.replace("\\", "/").split("/")[-2] == "Quizzes"
+    notes = [  # past quizzes are skipped: they would quiz on a quiz
+        n for n in search_notes(topic, limit=4, skip=("templates", "Quizzes"))
+        if n.relevance >= MIN_SCORE
     ]
     if not notes:
         return ModeResult(reply=NOT_FOUND)
@@ -46,6 +45,7 @@ async def run(
         f"Quiz - {topic}",
         f"{quiz.strip()}\n\n## Source notes\n{links}",
         tags=["quiz"],
+        note_type="quiz",
     )
     # Show only the questions in chat; answers stay in the note so the user can try first.
     questions = re.split(r"^##\s*(?:Answers|Respuestas)\b", quiz, flags=re.MULTILINE | re.IGNORECASE)[0]

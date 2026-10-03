@@ -4,7 +4,7 @@ from saras.core.persona import RETRIEVAL as SYSTEM
 from saras.integrations.gemini_client import ask
 from saras.integrations.obsidian_vault import search_notes
 
-MIN_SCORE = 2.0  # below this a match is too weak to answer from
+MIN_SCORE = 2.0  # relevance below this is too weak to answer from (recency boost not counted)
 MAX_NOTE_CHARS = 6000
 
 
@@ -17,7 +17,7 @@ NOT_FOUND = (
 async def run(
     message: str, previous: list[ModeResult] | None = None, save: bool = True
 ) -> ModeResult:  # never writes, so `save` is unused
-    notes = [n for n in search_notes(message, limit=5) if n.score >= MIN_SCORE]
+    notes = [n for n in search_notes(message, limit=5) if n.relevance >= MIN_SCORE]
     if not notes:
         return ModeResult(reply=NOT_FOUND)
 

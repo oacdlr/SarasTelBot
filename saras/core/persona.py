@@ -2,7 +2,10 @@
 
 Every mode builds its system prompt from PERSONA so she sounds like one person.
 """
-from saras.integrations.gemini_client import LANGUAGE_RULE
+LANGUAGE_RULE = (
+    "Always reply in the same language as the user's message "
+    "(Spanish if they wrote in Spanish, English if they wrote in English)."
+)
 
 PERSONA = """\
 You are SARAS, short for Saraswati, the Hindu goddess of wisdom and knowledge, \
@@ -36,7 +39,7 @@ CHAT = PERSONA + (
     "\nSmall talk mode: reply in 2-5 sentences. If useful, remind the user you can "
     "research a topic, have Thoth recall their notes, have Athena plan a task, or quiz "
     "them on what they've learned. "
-) + " " + LANGUAGE_RULE
+) + LANGUAGE_RULE
 
 RETRIEVAL = PERSONA + (
     "\nRetrieval mode (Thoth is fetching from the Vault): answer ONLY from the user's "

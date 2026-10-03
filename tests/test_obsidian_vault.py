@@ -106,3 +106,66 @@ def test_related_one_common_word_is_not_enough(vault):
     for name in ("Rust ownership", "Rust borrowing", "Rust lifetimes", "Rust traits"):
         obsidian_vault.write_note("Discovery", name, "Body", [])
     assert obsidian_vault.find_related("Rust async") == []
+
+
+def _hub(title, question):
+    return obsidian_vault.write_raw_note(
+        "Discovery", title, f'---\ntitle: "{title}"\ntype: discovery\nquestion: "{question}"\n---\n\nBody.\n'
+    )
+
+
+def test_find_discovery_hub_matches_same_topic_by_question_or_title(vault):
+    docker = _hub("Fundamentos y funcionamiento de Docker", "Explícame qué es Docker")
+    rag = _hub("Guía de RAG", "¿Qué sabes de rag?")
+    assert obsidian_vault.find_discovery_hub("Qué es docker y cómo funciona") == docker
+    assert obsidian_vault.find_discovery_hub("Explain RAG") == rag  # via the question
+    assert obsidian_vault.find_discovery_hub("Fundamentos de Docker") == docker  # via the title
+
+
+def test_find_discovery_hub_ignores_narrower_or_other_topics(vault):
+    _hub("Fundamentos de Docker", "Explícame qué es Docker")
+    assert obsidian_vault.find_discovery_hub("Explícame Docker networking") is None
+    assert obsidian_vault.find_discovery_hub("Explícame qué es Kubernetes") is None
+    assert obsidian_vault.find_discovery_hub("Explícame") is None  # no topic words at all
+
+
+def test_find_discovery_hub_without_discovery_folder(vault):
+    assert obsidian_vault.find_discovery_hub("Explícame qué es Docker") is None
+
+
+def test_search_skips_templates_by_default(vault):
+    obsidian_vault.write_note("templates", "Docker template", "Docker placeholder.", [])
+    note = obsidian_vault.write_note("Discovery", "Docker", "Docker runs containers.", [])
+    assert [n.path for n in obsidian_vault.search_notes("docker")] == [note]
+    assert len(obsidian_vault.search_notes("docker", skip=())) == 2
+
+
+def test_relevance_leaves_out_the_recency_boost(vault):
+    obsidian_vault.write_note("Discovery", "Meal planning", "I mention docker once.", [])
+    [note] = obsidian_vault.search_notes("docker")
+    assert note.relevance == 1.1  # one body hit
+    assert note.score > 2.0  # written today, so the boost pushes it past MIN_SCORE
+
+
+def test_write_note_type_goes_in_frontmatter(vault):
+    path = obsidian_vault.write_note("Execution", "Plan", "- [ ] step", ["execution"], note_type="execution")
+    lines = open(path, encoding="utf-8").read().splitlines()
+    assert lines[:3] == ["---", 'title: "Plan"', "type: execution"]
+    plain = obsidian_vault.write_note("Discovery", "Plain", "x", [])
+    assert "type:" not in open(plain, encoding="utf-8").read()
+
+
+def test_concept_index_prefers_a_filename_over_another_notes_alias(vault):
+    alias_owner = obsidian_vault.write_raw_note("Concepts", "Aardvark", '---\naliases: ["Docker"]\n---\n\nx')
+    named = obsidian_vault.write_raw_note("Concepts", "Docker", "---\n---\n\nx")
+    index = obsidian_vault.concept_index()
+    assert index["docker"] == named
+    assert index["aardvark"] == alias_owner
+
+
+def test_upsert_concept_adds_new_notes_to_a_shared_index(vault):
+    index = obsidian_vault.concept_index()
+    first = obsidian_vault.upsert_concept("Contenedor", ["Container"], "---\n---\n\nnew", "Aparece en", "- [[A]]", index=index)
+    second = obsidian_vault.upsert_concept("Container", [], "---\n---\n\nother", "Aparece en", "- [[A]]", index=index)
+    assert second == first  # matched through the alias of a note created earlier in the same run
+    assert len(os.listdir(os.path.join(vault, "Concepts"))) == 1

@@ -34,7 +34,7 @@ from saras.bot.status import format_status
 from saras.core.memory import ConversationMemory
 from saras.core.modes import chat, detail, discovery, execution, quiz, retrieval
 from saras.core.modes.base import ModeResult
-from saras.core.router import make_standalone, route
+from saras.core.router import INTENT_LABELS, make_standalone, route
 from saras.core.router_log import log_correction
 from saras.integrations.gemini_client import ModelUnavailable, QuotaExceeded, health
 from saras.integrations.obsidian_vault import (
@@ -58,8 +58,10 @@ memory = ConversationMemory()
 mode_counts: Counter = Counter()  # requests per mode since the bot started, for /status
 started_at = time.time()
 nosave_next: set[int] = set()  # chats whose next message should not be written to the Vault
-last_routed: dict[int, tuple[str, str]] = {}  # chat_id -> (message, mode) of the last router-chosen answer, for /fix
-FIX_MODES = ["discovery", "retrieval", "execution", "quiz", "chat"]
+# chat_id -> (message, mode, save, standalone) of the last answer, for /fix; only set when the
+# router chose the mode. `standalone` is the rewritten request, or None when chat mode never rewrote it
+last_routed: dict[int, tuple[str, str, bool, str | None]] = {}
+FIX_MODES = list(INTENT_LABELS)
 FIX_LABELS = {
     "discovery": "🔎 Investigar", "retrieval": "📚 Recordar", "execution": "📋 Planear",
     "quiz": "🧠 Quiz", "chat": "💬 Charla",
@@ -71,21 +73,28 @@ TYPING_INTERVAL = 4  # Telegram hides "typing…" after about 5 seconds
 
 @dataclass
 class PendingAnswer:
-    """A Discovery answer whose buttons ("plan"/"detail"/"drop") are still active."""
+    """A Discovery answer whose buttons ("plan"/"detail"/"drop"/"redo") are still active."""
     result: ModeResult  # the saved Discovery ModeResult, reused as context if acted on
     topic: str  # standalone topic behind it, for the plan objective / detail question
     answer_id: int
+    existing: bool = False  # an older hub found instead of new research: no "drop", offer "redo"
+    save: bool = True  # the request's save flag, kept for "redo"
 
 
 _answer_seq = itertools.count(1)
 pending_answers: dict[int, PendingAnswer] = {}  # chat_id -> its one active answer keyboard
 
 
-def _answer_keyboard(answer_id: int) -> InlineKeyboardMarkup:
+def _answer_keyboard(answer_id: int, existing: bool = False) -> InlineKeyboardMarkup:
+    last = (
+        InlineKeyboardButton("🔎 Investigar de nuevo", callback_data=f"ans:redo:{answer_id}")
+        if existing
+        else InlineKeyboardButton("🗑️ No guardar", callback_data=f"ans:drop:{answer_id}")
+    )
     return InlineKeyboardMarkup([[
         InlineKeyboardButton("📋 Planear esto", callback_data=f"ans:plan:{answer_id}"),
         InlineKeyboardButton("🔍 Más detalle", callback_data=f"ans:detail:{answer_id}"),
-        InlineKeyboardButton("🗑️ No guardar", callback_data=f"ans:drop:{answer_id}"),
+        last,
     ]])
 
 
@@ -173,12 +182,18 @@ async def respond(
     force_mode: str | None = None,
     save: bool = True,
     previous: list[ModeResult] | None = None,
+    research_again: bool = False,
+    standalone: bool = False,
 ) -> None:
     """Answer `message`. `force_mode` skips the router (slash commands); `save=False` writes
     nothing. `previous` seeds context for chaining onto an earlier result (e.g. an answer-button
-    action), without repeating that earlier result's text in this reply.
+    action), without repeating that earlier result's text in this reply. A lone Discovery
+    request first looks for a saved hub on the same topic; `research_again` skips that.
+    `standalone=True` means `message` was already rewritten to stand on its own (answer buttons,
+    /fix), so the follow-up rewrite is skipped.
     """
     chat_id = update.effective_chat.id
+    last_routed.pop(chat_id, None)  # /fix only applies to the latest answer, and only if routed
     history = memory.history(chat_id)
     typing = asyncio.create_task(_keep_typing(update.message.chat))
     status: Message | None = None
@@ -190,25 +205,35 @@ async def respond(
         results: list[ModeResult] = list(previous or [])
         new_results: list[ModeResult] = []
         topic = message
+        existing = False
         for mode, text in steps:
-            log.info("Mode: %s%s", mode, "" if save else " (nosave)")
-            mode_counts[mode] += 1
             if mode == "chat":  # small talk reads the history itself
+                log.info("Mode: chat")
                 result = await chat.run(text, previous=results, history=history)
             else:
-                text = await make_standalone(text, history)
-                result = await MODES[mode](text, previous=results, save=save)
+                if not standalone:
+                    text = await make_standalone(text, history)
+                result = None
+                if mode == "discovery" and len(steps) == 1 and not research_again:
+                    result = discovery.find_existing(text)
+                    existing = result is not None
+                log.info("Mode: %s%s%s", mode, "" if save else " (nosave)",
+                         " (already researched)" if existing else "")
+                if result is None:
+                    result = await MODES[mode](text, previous=results, save=save)
+            mode_counts[mode] += 1
             topic = text
             results.append(result)
             new_results.append(result)
         reply = "\n\n———\n\n".join(r.reply for r in new_results)
         memory.add(chat_id, message, reply)
         if force_mode is None and len(steps) == 1:
-            last_routed[chat_id] = (message, steps[0][0])
-        if new_results and steps[-1][0] == "discovery" and new_results[-1].note_path and save:
+            mode = steps[0][0]
+            last_routed[chat_id] = (message, mode, save, None if mode == "chat" else topic)
+        if new_results and steps[-1][0] == "discovery" and new_results[-1].note_path and (save or existing):
             answer_id = next(_answer_seq)
-            pending_answers[chat_id] = PendingAnswer(new_results[-1], topic, answer_id)
-            keyboard = _answer_keyboard(answer_id)
+            pending_answers[chat_id] = PendingAnswer(new_results[-1], topic, answer_id, existing, save)
+            keyboard = _answer_keyboard(answer_id, existing)
     except QuotaExceeded:
         log.warning("Gemini quota exhausted")
         reply = (
@@ -234,7 +259,8 @@ async def respond(
 
 
 async def answer_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """The "📋 Planear esto" / "🔍 Más detalle" / "🗑️ No guardar" buttons under a Discovery answer."""
+    """The "📋 Planear esto" / "🔍 Más detalle" / "🗑️ No guardar" (or, under an older hub,
+    "🔎 Investigar de nuevo") buttons under a Discovery answer."""
     query = update.callback_query
     if not is_allowed(update):
         await query.answer()
@@ -259,17 +285,21 @@ async def answer_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     except BadRequest:
         pass  # message may already be gone/edited
 
-    if action == "drop":
+    if action == "drop" and not pending.existing:  # never delete an older note from here
         delete_note(pending.result.note_path)
         await query.message.reply_text("🗑️ Removed from the Vault. / Eliminado del Vault.")
+        return
+    fake_update = SimpleNamespace(message=query.message, effective_chat=SimpleNamespace(id=chat_id))
+    if action == "redo" and pending.existing:
+        await respond(fake_update, pending.topic, force_mode="discovery", save=pending.save,
+                      research_again=True, standalone=True)
         return
     if action not in ("plan", "detail"):
         log.warning("Unknown answer-button action: %s", action)
         return
 
-    fake_update = SimpleNamespace(message=query.message, effective_chat=SimpleNamespace(id=chat_id))
     mode = "execution" if action == "plan" else "detail"
-    await respond(fake_update, pending.topic, force_mode=mode, previous=[pending.result])
+    await respond(fake_update, pending.topic, force_mode=mode, previous=[pending.result], standalone=True)
 
 
 async def fix(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -283,7 +313,7 @@ async def fix(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             "/ Nada que corregir: úsalo justo después de un mensaje que yo enruté."
         )
         return
-    _, used = entry
+    used = entry[1]
     buttons = [
         InlineKeyboardButton(FIX_LABELS[m], callback_data=f"fix:{m}") for m in FIX_MODES if m != used
     ]
@@ -312,10 +342,13 @@ async def fix_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await query.edit_message_reply_markup(reply_markup=None)  # one-shot
     except BadRequest:
         pass
-    message, routed = entry
+    message, routed, save, rewritten = entry
     log_correction(message, routed, corrected)
+    memory.drop_last(chat_id)  # the redo replaces the misrouted turn
     fake_update = SimpleNamespace(message=query.message, effective_chat=SimpleNamespace(id=chat_id))
-    await respond(fake_update, message, force_mode=corrected)
+    # reuse the first run's rewrite; a chat-routed message was never rewritten, so it still needs one
+    await respond(fake_update, rewritten or message, force_mode=corrected, save=save,
+                  standalone=rewritten is not None)
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -483,30 +516,40 @@ async def register_commands(app) -> None:
     await app.bot.set_my_commands(COMMAND_MENU)
 
 
+def _command(names, callback) -> CommandHandler:
+    """A CommandHandler that ignores edited messages (where update.message is None)."""
+    return CommandHandler(names, callback, filters=filters.UpdateType.MESSAGE)
+
+
+def add_handlers(app) -> None:
+    app.add_handler(_command("start", start))
+    app.add_handler(_command(
+        ["research", "investiga"], _mode_command("discovery", "Usage: /research <topic>")))
+    app.add_handler(_command(
+        ["recall", "recuerda"], _mode_command("retrieval", "Usage: /recall <question>")))
+    app.add_handler(_command(
+        ["plan", "planea"], _mode_command("execution", "Usage: /plan <goal>")))
+    app.add_handler(_command("quiz", _mode_command("quiz", "Usage: /quiz <topic>")))
+    app.add_handler(_command(["fix", "mode"], fix))
+    app.add_handler(_command("nosave", nosave))
+    app.add_handler(_command("last", last))
+    app.add_handler(_command("notes", notes))
+    app.add_handler(_command("search", search))
+    app.add_handler(_command("clear", clear))
+    app.add_handler(_command("status", status))
+    app.add_handler(_command("help", help_command))
+    app.add_handler(CallbackQueryHandler(answer_button, pattern=r"^ans:"))
+    app.add_handler(CallbackQueryHandler(fix_button, pattern=r"^fix:"))
+    app.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND & filters.UpdateType.MESSAGE, handle_message))
+
+
 def main() -> None:
     logging.basicConfig(format="%(asctime)s %(levelname)s %(name)s: %(message)s", level=logging.INFO)
     logging.getLogger("httpx").setLevel(logging.WARNING)
     config.telegram_allowed_user_ids()  # fail fast if the whitelist is missing
     app = ApplicationBuilder().token(config.telegram_bot_token()).post_init(register_commands).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler(
-        ["research", "investiga"], _mode_command("discovery", "Usage: /research <topic>")))
-    app.add_handler(CommandHandler(
-        ["recall", "recuerda"], _mode_command("retrieval", "Usage: /recall <question>")))
-    app.add_handler(CommandHandler(
-        ["plan", "planea"], _mode_command("execution", "Usage: /plan <goal>")))
-    app.add_handler(CommandHandler("quiz", _mode_command("quiz", "Usage: /quiz <topic>")))
-    app.add_handler(CommandHandler(["fix", "mode"], fix))
-    app.add_handler(CommandHandler("nosave", nosave))
-    app.add_handler(CommandHandler("last", last))
-    app.add_handler(CommandHandler("notes", notes))
-    app.add_handler(CommandHandler("search", search))
-    app.add_handler(CommandHandler("clear", clear))
-    app.add_handler(CommandHandler("status", status))
-    app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CallbackQueryHandler(answer_button, pattern=r"^ans:"))
-    app.add_handler(CallbackQueryHandler(fix_button, pattern=r"^fix:"))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    add_handlers(app)
     app.add_error_handler(on_error)
     log.info("SARAS is running. Vault: %s", config.obsidian_vault_path())
     app.run_polling()

@@ -6,9 +6,11 @@ import logging
 import re
 
 from saras.core.memory import Turn, format_history
-from saras.integrations.gemini_client import ModelUnavailable, QuotaExceeded, ask, classify_intent
+from saras.integrations.gemini_client import ModelUnavailable, QuotaExceeded, ask
 
 log = logging.getLogger(__name__)
+
+INTENT_LABELS = ("discovery", "retrieval", "execution", "quiz", "chat")
 
 # Checked in this order: the most specific intent wins.
 KEYWORDS = {
@@ -22,10 +24,11 @@ KEYWORDS = {
         "mis notas", "qué había", "que habia", "qué guardé", "que guarde",
     ],
     "execution": [
-        "help me plan", "break down", "organize", "organise", "due", "deadline",
-        "to-do", "todo list", "schedule",
+        "help me plan", "break down", "organize", "organise", "due date", "is due", "due by",
+        "deadline", "to-do", "todo list", "schedule",
         "ayúdame a planear", "ayudame a planear", "ayúdame a organizar", "ayudame a organizar",
-        "organiza", "planea", "entrega", "fecha límite", "fecha limite", "pendientes",
+        "organiza", "planea", "mi entrega", "fecha de entrega", "entregar", "fecha límite",
+        "fecha limite", "mis pendientes", "tengo pendientes",
     ],
     "discovery": [
         "research", "explain", "what is", "what are", "how does", "how do", "teach me",
@@ -47,6 +50,30 @@ def match_keywords(message: str) -> str | None:
         if any(re.search(rf"(?<!\w){re.escape(w)}(?!\w)", lowered) for w in words):
             return mode
     return None
+
+
+async def classify_intent(message: str, history: str = "") -> str:
+    """Pick a mode label; `history` is recent conversation, so follow-ups keep their mode."""
+    prompt = (
+        "You route messages for SARAS, a personal knowledge assistant. "
+        "Classify the message with exactly one word:\n"
+        "- discovery: the user wants to learn or research something new\n"
+        "- retrieval: the user asks about something they learned, saved or decided before\n"
+        "- execution: the user wants to plan, organize or break down a task, project or deadline\n"
+        "- quiz: the user wants to be tested or quizzed on what they learned\n"
+        "- chat: greetings, thanks, small talk or anything else\n\n"
+    )
+    if history:
+        prompt += (
+            f"{history}\n\nA short follow-up (e.g. \"and in Python?\") continues what the "
+            "conversation was doing.\n\n"
+        )
+    prompt += f"Message: {message}\n\nLabel:"
+    answer = (await ask(prompt, fast=True)).lower()
+    for label in INTENT_LABELS:
+        if label in answer:
+            return label
+    return "chat"
 
 
 async def route(message: str, history: list[Turn] | None = None) -> list[tuple[str, str]]:

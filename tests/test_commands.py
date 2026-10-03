@@ -28,7 +28,7 @@ def _files(root) -> list[str]:
 
 
 @patch("saras.core.modes.discovery.ask", new_callable=AsyncMock,
-       side_effect=["Docker Basics", EXTRACTION_EN])
+       return_value=EXTRACTION_EN)
 @patch("saras.core.modes.discovery.research", new_callable=AsyncMock,
        return_value=GroundedAnswer(BODY_EN, ["Docs - https://docs.docker.com"]))
 def test_discovery_nosave_writes_nothing(mock_research, mock_ask, vault):
@@ -200,3 +200,34 @@ def test_discovery_prompt_asks_for_next_steps_after_uncertainty_in_both_language
         prompt = discovery._system_prompt(discovery._STRINGS[lang])
         assert heading in prompt
         assert prompt.index(before) < prompt.index(heading)
+
+
+def _real_update(text, edited=False):
+    """A real PTB Update holding a text (or /command) message, new or edited."""
+    from datetime import datetime, timezone
+    from telegram import Chat, Message, MessageEntity, Update, User
+    entities = ([MessageEntity(MessageEntity.BOT_COMMAND, 0, len(text.split()[0]))]
+                if text.startswith("/") else None)
+    message = Message(1, datetime.now(timezone.utc), Chat(42, Chat.PRIVATE),
+                      from_user=User(7, "oscar", False), text=text, entities=entities)
+    message.set_bot(SimpleNamespace(username="saras_bot"))  # CommandHandler reads the bot's name
+    if edited:
+        return Update(1, edited_message=message)
+    return Update(1, message=message)
+
+
+def _registered_handlers():
+    app = MagicMock()
+    telegram_bot.add_handlers(app)
+    return [call.args[0] for call in app.add_handler.call_args_list]
+
+
+def test_handlers_ignore_edited_messages():
+    for text in ("/research docker", "/help", "/fix discovery", "hola, qué tal"):
+        assert not any(h.check_update(_real_update(text, edited=True))
+                       for h in _registered_handlers()), text
+
+
+def test_handlers_still_match_new_messages():
+    for text in ("/research docker", "/help", "/fix discovery", "hola, qué tal"):
+        assert any(h.check_update(_real_update(text)) for h in _registered_handlers()), text

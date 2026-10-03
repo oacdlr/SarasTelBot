@@ -186,3 +186,67 @@ def test_unauthorized_user_is_ignored(mock_allowed, monkeypatch):
 
     mock_delete.assert_not_called()
     assert telegram_bot.pending_answers == {42: pending}
+
+
+@patch("saras.bot.telegram_bot.is_allowed", return_value=True)
+@patch("saras.bot.telegram_bot.route", new_callable=AsyncMock, return_value=[("discovery", "Explain Docker")])
+@patch("saras.bot.telegram_bot.make_standalone", new_callable=AsyncMock, return_value="Explain Docker")
+def test_repeat_research_offers_the_saved_hub_instead(mock_standalone, mock_route, mock_allowed, monkeypatch):
+    monkeypatch.setattr(telegram_bot, "memory", ConversationMemory())
+    monkeypatch.setattr(telegram_bot, "pending_answers", {})
+    saved = ModeResult(reply="📚 Ya investigaste esto…", note_path="/vault/Discovery/Docker.md")
+    monkeypatch.setattr(telegram_bot.discovery, "find_existing", MagicMock(return_value=saved))
+    mock_discovery = AsyncMock()
+    monkeypatch.setitem(telegram_bot.MODES, "discovery", mock_discovery)
+
+    update, status_msg = _update("Explain Docker")
+    asyncio.run(telegram_bot.respond(update, "Explain Docker"))
+
+    mock_discovery.assert_not_awaited()
+    markup = status_msg.edit_text.await_args.kwargs["reply_markup"]
+    assert [b.text for row in markup.inline_keyboard for b in row] == [
+        "📋 Planear esto", "🔍 Más detalle", "🔎 Investigar de nuevo",
+    ]
+    assert telegram_bot.pending_answers[42].existing
+
+
+@patch("saras.bot.telegram_bot.is_allowed", return_value=True)
+def test_redo_button_researches_again_and_skips_the_check(mock_allowed, monkeypatch):
+    monkeypatch.setattr(telegram_bot, "memory", ConversationMemory())
+    saved = ModeResult(reply="old", note_path="/vault/Discovery/Docker.md")
+    pending = telegram_bot.PendingAnswer(saved, "Explain Docker", 4, existing=True, save=False)
+    monkeypatch.setattr(telegram_bot, "pending_answers", {42: pending})
+    mock_find = MagicMock(return_value=saved)
+    monkeypatch.setattr(telegram_bot.discovery, "find_existing", mock_find)
+    mock_discovery = AsyncMock(return_value=ModeResult(reply="New research.", note_path=None))
+    monkeypatch.setitem(telegram_bot.MODES, "discovery", mock_discovery)
+    mock_delete = MagicMock()
+    monkeypatch.setattr(telegram_bot, "delete_note", mock_delete)
+
+    update, _ = _callback("drop", 4)  # an older hub is never deleted from a button
+    asyncio.run(telegram_bot.answer_button(update, None))
+    mock_delete.assert_not_called()
+
+    monkeypatch.setattr(telegram_bot, "pending_answers", {42: pending})
+    update, _ = _callback("redo", 4)
+    asyncio.run(telegram_bot.answer_button(update, None))
+    mock_find.assert_not_called()
+    assert mock_discovery.await_args.args[0] == "Explain Docker"
+    assert mock_discovery.await_args.kwargs["save"] is False  # keeps the /nosave of the request
+
+
+@patch("saras.bot.telegram_bot.is_allowed", return_value=True)
+def test_answer_buttons_skip_the_follow_up_rewrite(mock_allowed, monkeypatch):
+    monkeypatch.setattr(telegram_bot, "memory", ConversationMemory())
+    telegram_bot.memory.add(42, "Explain Docker", "Docker packages apps.")
+    discovery_result = ModeResult(reply="Docker packages apps.", note_path="/vault/Discovery/Docker.md")
+    pending = telegram_bot.PendingAnswer(result=discovery_result, topic="Explain Docker", answer_id=4)
+    monkeypatch.setattr(telegram_bot, "pending_answers", {42: pending})
+    mock_standalone = AsyncMock()
+    monkeypatch.setattr(telegram_bot, "make_standalone", mock_standalone)
+    monkeypatch.setitem(telegram_bot.MODES, "detail", AsyncMock(return_value=ModeResult(reply="More.")))
+
+    update, _ = _callback("detail", 4)
+    asyncio.run(telegram_bot.answer_button(update, None))
+
+    mock_standalone.assert_not_awaited()

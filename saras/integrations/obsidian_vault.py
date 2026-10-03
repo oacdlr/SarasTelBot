@@ -41,7 +41,8 @@ class Note:
     title: str
     body: str
     tags: list[str]
-    score: float = 0.0
+    score: float = 0.0  # for ranking: relevance plus a recency boost (search_notes)
+    relevance: float = 0.0  # how well the note matches, without the boost: filter on this
 
 
 def safe_title(title: str) -> str:
@@ -53,12 +54,24 @@ def safe_title(title: str) -> str:
     return cleaned or "Untitled"
 
 
-def _yaml_str(value: str) -> str:
+def yaml_str(value: str) -> str:
     return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
-def _reserve_path(folder: str, title: str) -> tuple[str, str]:
-    """Pick a free path for a new note, without creating the file yet."""
+def bare_list(items: list[str]) -> str:
+    return "[" + ", ".join(items) + "]"
+
+
+def quoted_list(items: list[str]) -> str:
+    return "[" + ", ".join(yaml_str(i) for i in items) + "]"
+
+
+def reserve_note_path(folder: str, title: str) -> tuple[str, str]:
+    """Pick a free path for a new note, without creating the file yet.
+
+    Returns (path, safe title). The note's wikilink name is note_title(path), which
+    differs from the safe title when a " (2)" suffix was needed.
+    """
     title = safe_title(title)
     folder_path = os.path.join(config.obsidian_vault_path(), folder)
     os.makedirs(folder_path, exist_ok=True)
@@ -77,19 +90,24 @@ def write_note(
     body: str,
     tags: list[str],
     sources: list[str] | None = None,
+    note_type: str | None = None,
 ) -> str:
-    """Write a new note and return its path. Never overwrites an existing note."""
-    path, title = _reserve_path(folder, title)
+    """Write a new note and return its path. Never overwrites an existing note.
 
-    lines = [
-        "---",
-        f"title: {_yaml_str(title)}",
+    `note_type` becomes the frontmatter `type:` (e.g. "execution"), like Discovery/Concept notes have.
+    """
+    path, title = reserve_note_path(folder, title)
+
+    lines = ["---", f"title: {yaml_str(title)}"]
+    if note_type:
+        lines.append(f"type: {note_type}")
+    lines += [
         f"date: {date.today().isoformat()}",
-        f"tags: [{', '.join(tags)}]",
+        f"tags: {bare_list(tags)}",
     ]
     if sources:
         lines.append("sources:")
-        lines.extend(f"  - {_yaml_str(s)}" for s in sources)
+        lines.extend(f"  - {yaml_str(s)}" for s in sources)
     lines += ["---", "", ""]
 
     with open(path, "w", encoding="utf-8") as f:
@@ -97,12 +115,14 @@ def write_note(
     return path
 
 
-def write_raw_note(folder: str, title: str, content: str) -> str:
+def write_raw_note(folder: str, title: str, content: str, path: str | None = None) -> str:
     """Write a note whose full Markdown (frontmatter + body) is already assembled.
 
-    Like write_note, this never overwrites an existing note.
+    Like write_note, this never overwrites an existing note. Pass `path` from
+    reserve_note_path() when other notes must link to this one before it is written.
     """
-    path, _ = _reserve_path(folder, title)
+    if path is None:
+        path, _ = reserve_note_path(folder, title)
     with open(path, "w", encoding="utf-8") as f:
         f.write(content.strip() + "\n")
     return path
@@ -122,28 +142,38 @@ def note_title(path: str) -> str:
     return os.path.splitext(os.path.basename(path))[0]
 
 
-def find_concept(name: str) -> str | None:
-    """Find an existing Concepts/ note by filename or alias (case/accent-insensitive)."""
+def _concept_key(name: str) -> str:
+    return _strip_accents(name.strip().lower())
+
+
+def concept_index() -> dict[str, str]:
+    """{normalized filename or alias: path} for every Concepts/ note, read in one pass.
+
+    A filename beats another note's alias for the same name; among aliases, the first
+    note alphabetically wins.
+    """
     concepts_dir = os.path.join(config.obsidian_vault_path(), "Concepts")
-    target = _strip_accents(name.strip().lower())
-    if not target or not os.path.isdir(concepts_dir):
-        return None
-
-    entries = sorted(e for e in os.listdir(concepts_dir) if e.endswith(".md"))
-    for entry in entries:
-        path = os.path.join(concepts_dir, entry)
-        if _strip_accents(note_title(path).lower()) == target:
-            return path
-
-    for entry in entries:
-        path = os.path.join(concepts_dir, entry)
+    if not os.path.isdir(concepts_dir):
+        return {}
+    paths = [os.path.join(concepts_dir, e) for e in sorted(os.listdir(concepts_dir)) if e.endswith(".md")]
+    index: dict[str, str] = {}
+    for path in paths:
         try:
             _, aliases, _ = _parse(path)
         except (OSError, UnicodeDecodeError):
             continue
-        if any(_strip_accents(a.lower()) == target for a in aliases):
-            return path
-    return None
+        for alias in aliases:
+            index.setdefault(_concept_key(alias), path)
+    index.update({_concept_key(note_title(p)): p for p in reversed(paths)})  # first file wins
+    return index
+
+
+def find_concept(name: str, index: dict[str, str] | None = None) -> str | None:
+    """Find an existing Concepts/ note by filename or alias (case/accent-insensitive)."""
+    target = _concept_key(name)
+    if not target:
+        return None
+    return (concept_index() if index is None else index).get(target)
 
 
 def append_under_heading(path: str, heading: str, line: str) -> None:
@@ -176,21 +206,26 @@ def upsert_concept(
     content: str,
     backlink_heading: str,
     backlink_line: str,
+    index: dict[str, str] | None = None,
 ) -> str:
     """Create a Concepts/ note from `content`, or, if one already matches `name`/`aliases`,
     leave it untouched except for appending `backlink_line` under `backlink_heading` (once).
     Returns the note's path either way.
+
+    Pass `index` from concept_index() to share one scan of Concepts/ across several
+    concepts; a newly created note is added to it.
     """
-    existing = find_concept(name)
-    if existing is None:
-        for alias in aliases:
-            existing = find_concept(alias)
-            if existing:
-                break
+    if index is None:
+        index = concept_index()
+    keys = [k for k in map(_concept_key, [name, *aliases]) if k]
+    existing = next((index[k] for k in keys if k in index), None)
     if existing:
         append_under_heading(existing, backlink_heading, backlink_line)
         return existing
-    return write_raw_note("Concepts", name, content)
+    path = write_raw_note("Concepts", name, content)
+    for key in [_concept_key(note_title(path)), *keys]:
+        index.setdefault(key, path)
+    return path
 
 
 SARAS_FOLDERS = ("Discovery", "Execution", "Quizzes", "Concepts")
@@ -269,16 +304,20 @@ def _word_pattern(term: str) -> re.Pattern:
     return re.compile(rf"(?<!\w){re.escape(term)}(?!\w)")
 
 
-def search_notes(query: str, limit: int = 5) -> list[Note]:
-    """Keyword search over the vault, ranked by title/tag/body hits plus recency."""
+def search_notes(query: str, limit: int = 5, skip: tuple[str, ...] = ("templates",)) -> list[Note]:
+    """Keyword search over the vault, ranked by title/tag/body hits plus recency.
+
+    `skip` lists top-level folders to leave out (by default the note templates).
+    """
     terms = [_strip_accents(k) for k in keywords(query)]
     vault = config.obsidian_vault_path()
     if not terms or not os.path.isdir(vault):
         return []
 
+    patterns = [(t, _word_pattern(t)) for t in dict.fromkeys(terms)]
     now = time.time()
     results: list[Note] = []
-    for path in _markdown_files(vault):
+    for path in _markdown_files(vault, skip=skip):
         try:
             tags, aliases, body = _parse(path)
         except (OSError, UnicodeDecodeError):
@@ -290,8 +329,7 @@ def search_notes(query: str, limit: int = 5) -> list[Note]:
         aliases_n = [_strip_accents(a.lower()) for a in aliases]
 
         score = 0.0
-        for term in terms:
-            pattern = _word_pattern(term)
+        for term, pattern in patterns:
             if pattern.search(title_n) or any(pattern.search(a) for a in aliases_n):
                 score += 3
             if term in tags_n:
@@ -302,8 +340,9 @@ def search_notes(query: str, limit: int = 5) -> list[Note]:
         if score == 0:
             continue
         age_days = (now - os.path.getmtime(path)) / 86400
-        score += max(0.0, 1.0 - age_days / 365)  # small boost for recent notes
-        results.append(Note(path=path, title=title, body=body.strip(), tags=tags, score=score))
+        boost = max(0.0, 1.0 - age_days / 365)  # small boost for recent notes
+        results.append(Note(path=path, title=title, body=body.strip(), tags=tags,
+                            score=score + boost, relevance=score))
 
     results.sort(key=lambda n: n.score, reverse=True)
     return results[:limit]
@@ -399,3 +438,57 @@ def find_related(topic: str, exclude: set[str] | frozenset[str] = frozenset(), l
 
     results.sort(key=lambda n: n.score, reverse=True)
     return results[:limit]
+
+
+# find_discovery_hub(): is a research request already answered by a saved hub? Compares
+# the request's topic words with each hub's original question and its title.
+SAME_TOPIC_MIN_OVERLAP = 0.6  # shared words / all words (Jaccard), on topic words only
+# Words that frame a request ("explícame", "how does … work") instead of naming its topic.
+_REQUEST_FILLER = _TITLE_FILLER | {
+    "explain", "explica", "explicame", "investiga", "investigar", "research", "teach",
+    "ensename", "quiero", "aprender", "sabes", "dime", "tell", "funcionan", "funcionamiento",
+    "work", "mean", "means", "significa",
+}
+
+
+def _frontmatter_value(path: str, key: str) -> str:
+    """A quoted scalar from the note's frontmatter (as written by yaml_str), or ""."""
+    with open(path, encoding="utf-8") as f:
+        content = f.read()
+    end = content.find("\n---", 3) if content.startswith("---") else -1
+    if end == -1:
+        return ""
+    match = re.search(rf'^{re.escape(key)}:\s*"(.*)"\s*$', content[3:end], re.MULTILINE)
+    return match.group(1).replace('\\"', '"').replace("\\\\", "\\") if match else ""
+
+
+def topic_terms(text: str) -> set[str]:
+    """The words of `text` that name its topic: no stopwords, request verbs or title filler."""
+    return {t for t in (_strip_accents(k) for k in keywords(text)) if t not in _REQUEST_FILLER}
+
+
+def find_discovery_hub(request: str) -> str | None:
+    """Path of a saved Discovery hub on the same topic as `request`, or None (newest wins ties).
+
+    "Explícame qué es Docker" matches a hub asked as "¿Qué es Docker?" or titled
+    "Fundamentos de Docker", but not one on "Docker networking" (a narrower topic).
+    """
+    terms = topic_terms(request)
+    folder = os.path.join(config.obsidian_vault_path(), "Discovery")
+    if not terms or not os.path.isdir(folder):
+        return None
+    paths = [os.path.join(folder, n) for n in os.listdir(folder) if n.endswith(".md")]
+    paths.sort(key=os.path.getmtime, reverse=True)
+
+    best, best_overlap = None, 0.0
+    for path in paths:
+        try:
+            question = _frontmatter_value(path, "question")
+        except (OSError, UnicodeDecodeError):
+            continue
+        for other in (topic_terms(question), topic_terms(note_title(path))):
+            if other:
+                overlap = len(terms & other) / len(terms | other)
+                if overlap > best_overlap:
+                    best, best_overlap = path, overlap
+    return best if best_overlap >= SAME_TOPIC_MIN_OVERLAP else None

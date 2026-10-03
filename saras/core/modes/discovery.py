@@ -4,13 +4,19 @@ import re
 from datetime import date
 
 from saras.core.modes.base import ModeResult
-from saras.core.persona import DISCOVERY_PREFIX
-from saras.integrations.gemini_client import LANGUAGE_RULE, ask, research
+from saras.core.persona import DISCOVERY_PREFIX, LANGUAGE_RULE
+from saras.integrations.gemini_client import ask, research
 from saras.integrations.obsidian_vault import (
+    bare_list,
+    concept_index,
+    find_discovery_hub,
     find_related,
     note_title,
+    quoted_list,
+    reserve_note_path,
     upsert_concept,
     write_raw_note,
+    yaml_str,
 )
 
 # Section headings and vocabulary the hub/concept templates use, per language.
@@ -70,7 +76,9 @@ _HEADING_RE = re.compile(r"^##\s", re.MULTILINE)
 _EXTRACTION_SYSTEM = (
     "You extract structured data from a researched knowledge note. Reply with ONLY a JSON "
     "object, no code fences and no commentary, matching this shape exactly:\n"
-    '{"short_answer": "3-5 lines summarizing the core idea/verdict, same language as the '
+    '{"title": "short, specific note title (max 8 words) answering the request, same '
+    'language as the request, no quotes or final punctuation", '
+    '"short_answer": "3-5 lines summarizing the core idea/verdict, same language as the '
     'text", "confidence": "high|medium|low", "tags": ["2-4 lowercase hyphenated topic '
     'tags, ALWAYS in English regardless of the text\'s language"], "concepts": '
     '[{"name": "", "aliases": [], "definition": "1-2 sentences", '
@@ -81,18 +89,6 @@ _EXTRACTION_SYSTEM = (
 
 def _is_spanish(message: str) -> bool:
     return bool(_SPANISH_CHARS.search(message)) or bool(_SPANISH_WORDS.search(message))
-
-
-def _yaml_str(value: str) -> str:
-    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
-
-
-def _bare_list(items: list[str]) -> str:
-    return "[" + ", ".join(items) + "]"
-
-
-def _quoted_list(items: list[str]) -> str:
-    return "[" + ", ".join(_yaml_str(i) for i in items) + "]"
 
 
 def _split_source(entry: str) -> tuple[str, str]:
@@ -161,6 +157,9 @@ def _parse_extraction(raw: str, source_text: str) -> dict:
     except json.JSONDecodeError:
         data = {}
 
+    title = data.get("title")
+    title = title.strip().strip('"\'') if isinstance(title, str) else ""
+
     short_answer = data.get("short_answer")
     if not isinstance(short_answer, str) or not short_answer.strip():
         short_answer = _fallback_short_answer(source_text)
@@ -200,6 +199,7 @@ def _parse_extraction(raw: str, source_text: str) -> dict:
             )
 
     return {
+        "title": title,
         "short_answer": short_answer.strip(),
         "confidence": confidence,
         "tags": tags,
@@ -207,31 +207,23 @@ def _parse_extraction(raw: str, source_text: str) -> dict:
     }
 
 
-async def _extract(text: str) -> dict:
-    raw = await ask(f"Text:\n\n{text}", system=_EXTRACTION_SYSTEM, fast=True)
+async def _extract(message: str, text: str) -> dict:
+    """Title, summary, tags and concepts in one fast call."""
+    raw = await ask(f"Request: {message}\n\nText:\n\n{text}", system=_EXTRACTION_SYSTEM, fast=True)
     return _parse_extraction(raw, text)
 
 
-async def _make_title(message: str) -> str:
-    return await ask(
-        "Write a short, specific title (max 8 words) for a knowledge note answering this "
-        "request, in the same language as the request. Reply with the title only, "
-        f"no quotes or punctuation at the end.\n\nRequest: {message}",
-        fast=True,
-    )
-
-
 def _build_concept_content(
-    concept: dict, s: dict, hub_title: str, tags: list[str], sources: list[str]
+    concept: dict, s: dict, hub_title: str, tags: list[str], sources: list[tuple[str, str]]
 ) -> str:
     lines = [
         "---",
-        f"title: {_yaml_str(concept['name'])}",
+        f"title: {yaml_str(concept['name'])}",
         "type: concept",
         f"date: {date.today().isoformat()}",
         f"status: {s['status']}",
-        f"aliases: {_quoted_list(concept['aliases'])}",
-        f"tags: {_bare_list(['concept'] + [t for t in tags if t != 'concept'])}",
+        f"aliases: {quoted_list(concept['aliases'])}",
+        f"tags: {bare_list(['concept'] + [t for t in tags if t != 'concept'])}",
         "---",
         "",
         f"**{concept['name']}** {s['verb']} {concept['definition'] or '…'}".rstrip(),
@@ -248,7 +240,7 @@ def _build_concept_content(
     if sources:
         lines.append("")
         lines.append(f"## {s['sources']}")
-        lines.extend(f"- [{_split_source(e)[0]}]({_split_source(e)[1]})" for e in sources)
+        lines.extend(f"- [{name}]({url})" for name, url in sources)
     return "\n".join(lines) + "\n"
 
 
@@ -265,18 +257,18 @@ def _build_hub_content(
 ) -> str:
     lines = [
         "---",
-        f"title: {_yaml_str(title)}",
+        f"title: {yaml_str(title)}",
         "type: discovery",
         f"date: {date.today().isoformat()}",
-        f"question: {_yaml_str(message)}",
+        f"question: {yaml_str(message)}",
         f"status: {s['status']}",
         f"confidence: {confidence}",
-        f"tags: {_bare_list(tags)}",
+        f"tags: {bare_list(tags)}",
     ]
     if concept_titles:
-        lines.append(f"concepts: {_quoted_list([f'[[{c}]]' for c in concept_titles])}")
+        lines.append(f"concepts: {quoted_list([f'[[{c}]]' for c in concept_titles])}")
     if source_urls:
-        lines.append(f"sources: {_quoted_list(source_urls)}")
+        lines.append(f"sources: {quoted_list(source_urls)}")
     lines += ["---", ""]
     lines.append(f"> [!question] {s['question_callout']}")
     lines.append(f"> {message}")
@@ -288,6 +280,36 @@ def _build_hub_content(
     return "\n".join(lines) + "\n"
 
 
+def _hub_summary(path: str) -> str:
+    """The text of the hub's "> [!summary]" callout."""
+    with open(path, encoding="utf-8") as f:
+        lines = f.read().splitlines()
+    start = next((i for i, ln in enumerate(lines) if ln.startswith("> [!summary]")), None)
+    if start is None:
+        return ""
+    summary = []
+    for ln in lines[start + 1:]:
+        if not ln.startswith(">"):
+            break
+        summary.append(ln[1:].strip())
+    return "\n".join(summary).strip()
+
+
+def find_existing(message: str) -> ModeResult | None:
+    """A saved hub that already answers `message`, so repeat research doesn't duplicate it."""
+    path = find_discovery_hub(message)
+    if path is None:
+        return None
+    try:
+        summary = _hub_summary(path)
+    except (OSError, UnicodeDecodeError):
+        return None
+    reply = f"📚 Ya investigaste esto / Already researched: [[{note_title(path)}]]"
+    if summary:
+        reply += f"\n\n{summary}"
+    return ModeResult(reply=reply, note_path=path)
+
+
 async def run(
     message: str, previous: list[ModeResult] | None = None, save: bool = True
 ) -> ModeResult:
@@ -295,26 +317,44 @@ async def run(
     s = _STRINGS[lang]
 
     answer = await research(message, system=_system_prompt(s))
-    title = (await _make_title(message)).strip().strip('"\'') or message
     body = _body_from_first_heading(answer.text)
-    extraction = await _extract(answer.text)
+    extraction = await _extract(message, answer.text)
 
     grounded = answer.grounded
+    if not save:
+        reply = extraction["short_answer"]
+        if extraction["concepts"]:
+            reply += "\n\n" + "\n".join(f"• {c['name']}" for c in extraction["concepts"])
+        reply += "\n\n🚫 Not saved to Vault (/nosave)"
+        if not grounded:
+            reply += "\n⚠️ Sin búsqueda web (cuota de Gemini) — respuesta sin fuentes."
+        return ModeResult(reply=reply)
+
     confidence = extraction["confidence"] if grounded else "low"
     tags = ["discovery"] + [t for t in extraction["tags"] if t != "discovery"]
     if not grounded:
         tags.append("unverified")
+    sources = [_split_source(e) for e in answer.sources]
+
+    # Reserve the hub's file first: its final name (unsafe characters stripped, " (2)"
+    # on a collision) is what concept backlinks must point to. No await from here to
+    # the write, so no other request can take the same path in between.
+    hub_path, _ = reserve_note_path("Discovery", extraction["title"] or message)
+    title = note_title(hub_path)
 
     concept_titles = []
-    for concept in extraction["concepts"] if save else []:
+    concepts = concept_index()  # one scan of Concepts/ for the whole run
+    for concept in extraction["concepts"]:
         path = upsert_concept(
             name=concept["name"],
             aliases=concept["aliases"],
-            content=_build_concept_content(concept, s, title, extraction["tags"], answer.sources),
+            content=_build_concept_content(concept, s, title, extraction["tags"], sources),
             backlink_heading=s["appears_in"],
             backlink_line=f"- [[{title}]]",
+            index=concepts,
         )
         concept_titles.append(note_title(path))
+    concept_titles = list(dict.fromkeys(concept_titles))  # two names can match one note
 
     # Relate by topic (title, concept names, tags), not by the chat message. The hub
     # isn't written yet, and the concepts it already lists are excluded.
@@ -332,24 +372,11 @@ async def run(
     if related:
         parts.append(f"## {s['related']}\n" + "\n".join(f"- [[{n.title}]]" for n in related))
 
-    source_urls = [_split_source(e)[1] for e in answer.sources]
-    if answer.sources:
+    if sources:
         parts.append(
             f"## {s['sources']}\n"
-            + "\n".join(
-                f"{i}. [{_split_source(e)[0]}]({_split_source(e)[1]})"
-                for i, e in enumerate(answer.sources, 1)
-            )
+            + "\n".join(f"{i}. [{name}]({url})" for i, (name, url) in enumerate(sources, 1))
         )
-
-    if not save:
-        reply = extraction["short_answer"]
-        if extraction["concepts"]:
-            reply += "\n\n" + "\n".join(f"• {c['name']}" for c in extraction["concepts"])
-        reply += "\n\n🚫 Not saved to Vault (/nosave)"
-        if not grounded:
-            reply += "\n⚠️ Sin búsqueda web (cuota de Gemini) — respuesta sin fuentes."
-        return ModeResult(reply=reply)
 
     content = _build_hub_content(
         title=title,
@@ -358,16 +385,16 @@ async def run(
         confidence=s["confidence_labels"][confidence],
         tags=tags,
         concept_titles=concept_titles,
-        source_urls=source_urls,
+        source_urls=[url for _, url in sources],
         summary=extraction["short_answer"],
         body="\n\n".join(parts),
     )
-    path = write_raw_note("Discovery", title, content)
+    write_raw_note("Discovery", title, content, path=hub_path)
 
     reply = extraction["short_answer"]
-    if extraction["concepts"]:
-        reply += "\n\n" + "\n".join(f"• [[{c['name']}]]" for c in extraction["concepts"])
-    reply += f"\n\n📚 Saved to Vault: [[{note_title(path)}]]"
+    if concept_titles:
+        reply += "\n\n" + "\n".join(f"• [[{c}]]" for c in concept_titles)
+    reply += f"\n\n📚 Saved to Vault: [[{title}]]"
     if not grounded:
         reply += "\n⚠️ Sin búsqueda web (cuota de Gemini) — respuesta sin fuentes."
-    return ModeResult(reply=reply, note_path=path)
+    return ModeResult(reply=reply, note_path=hub_path)

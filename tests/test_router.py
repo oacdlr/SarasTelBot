@@ -1,7 +1,7 @@
 import asyncio
 from unittest.mock import AsyncMock, patch
 
-from saras.core.router import match_keywords, route
+from saras.core.router import INTENT_LABELS, classify_intent, match_keywords, route
 
 
 def test_discovery_keyword():
@@ -33,3 +33,33 @@ def test_chained_discovery_then_execution():
     steps = asyncio.run(route("Research RAG architecture and then help me plan the implementation"))
     assert [mode for mode, _ in steps] == ["discovery", "execution"]
     assert steps[0][1] == "Research RAG architecture"
+
+
+def test_study_questions_with_planning_words_are_not_execution():
+    assert match_keywords("¿Qué son las pendientes de una recta?") == "discovery"
+    assert match_keywords("Explícame la entrega continua") == "discovery"
+    assert match_keywords("Why did the empire fall, due to the economy?") != "execution"
+
+
+def test_execution_phrases_still_match():
+    assert match_keywords("My essay is due Friday") == "execution"
+    assert match_keywords("¿Cuál es la fecha de entrega?") == "execution"
+    assert match_keywords("Tengo pendientes para mañana") == "execution"
+    assert match_keywords("Tengo que entregar el informe") == "execution"
+
+
+@patch("saras.core.router.ask", new_callable=AsyncMock, return_value="Discovery.")
+def test_classify_intent_parses_label(mock_ask):
+    assert asyncio.run(classify_intent("algo")) == "discovery"
+
+
+@patch("saras.core.router.ask", new_callable=AsyncMock, return_value="no idea")
+def test_classify_intent_defaults_to_chat(mock_ask):
+    assert asyncio.run(classify_intent("algo")) == "chat"
+
+
+def test_fix_modes_follow_router_labels():
+    from saras.bot.telegram_bot import FIX_LABELS, FIX_MODES
+
+    assert FIX_MODES == list(INTENT_LABELS)
+    assert set(FIX_LABELS) == set(INTENT_LABELS)

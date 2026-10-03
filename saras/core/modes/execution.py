@@ -32,5 +32,6 @@ async def run(
     if links:
         body += "\n\n## Related knowledge\n" + "\n".join(f"- [[{t}]]" for t in links)
 
-    path = write_note("Execution", title.strip().strip('"\'') or message, body, tags=["execution"])
+    path = write_note("Execution", title.strip().strip('"\'') or message, body, tags=["execution"],
+                      note_type="execution")
     return ModeResult(reply=f"{plan}\n\n✅ Plan saved to Vault: [[{note_title(path)}]]", note_path=path)

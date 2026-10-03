@@ -5,7 +5,7 @@ import pytest
 from unittest.mock import AsyncMock, patch
 
 from saras.bot.telegram_bot import split_message
-from saras.core.modes import detail, discovery, execution, retrieval
+from saras.core.modes import detail, discovery, execution, quiz, retrieval
 from saras.core.modes.base import ModeResult
 from saras.integrations.gemini_client import GroundedAnswer
 from saras.integrations.obsidian_vault import find_concept, upsert_concept, write_note, write_raw_note
@@ -26,6 +26,7 @@ BODY_ES = (
 )
 
 EXTRACTION_ES = json.dumps({
+    "title": "Docker Basics",
     "short_answer": "Docker empaqueta apps en contenedores ligeros y portables.",
     "confidence": "high",
     "tags": ["docker", "containers"],
@@ -54,6 +55,7 @@ BODY_EN = (
 )
 
 EXTRACTION_EN = json.dumps({
+    "title": "Docker Basics",
     "short_answer": "Docker packages apps into lightweight, portable containers.",
     "confidence": "medium",
     "tags": ["docker", "containers"],
@@ -68,7 +70,7 @@ EXTRACTION_EN = json.dumps({
 
 
 @patch("saras.core.modes.discovery.ask", new_callable=AsyncMock,
-       side_effect=["Docker Basics", EXTRACTION_ES])
+       return_value=EXTRACTION_ES)
 @patch("saras.core.modes.discovery.research", new_callable=AsyncMock,
        return_value=GroundedAnswer(BODY_ES, ["Docs - https://docs.docker.com"]))
 def test_discovery_writes_hub_note_es(mock_research, mock_ask, vault):
@@ -99,7 +101,7 @@ def test_discovery_writes_hub_note_es(mock_research, mock_ask, vault):
 
 
 @patch("saras.core.modes.discovery.ask", new_callable=AsyncMock,
-       side_effect=["Docker Basics", EXTRACTION_EN])
+       return_value=EXTRACTION_EN)
 @patch("saras.core.modes.discovery.research", new_callable=AsyncMock,
        return_value=GroundedAnswer(BODY_EN, ["Docs - https://docs.docker.com"]))
 def test_discovery_writes_hub_note_en(mock_research, mock_ask, vault):
@@ -121,7 +123,7 @@ def test_discovery_writes_hub_note_en(mock_research, mock_ask, vault):
 
 
 @patch("saras.core.modes.discovery.ask", new_callable=AsyncMock,
-       side_effect=["Docker Basics", EXTRACTION_ES])
+       return_value=EXTRACTION_ES)
 @patch("saras.core.modes.discovery.research", new_callable=AsyncMock,
        return_value=GroundedAnswer(BODY_ES, ["Docs - https://docs.docker.com"]))
 def test_discovery_creates_concept_note(mock_research, mock_ask, vault):
@@ -202,7 +204,7 @@ def test_parse_extraction_falls_back_on_bad_json():
 
 
 @patch("saras.core.modes.discovery.ask", new_callable=AsyncMock,
-       side_effect=["Docker Basics", "not valid json"])
+       return_value="not valid json")
 @patch("saras.core.modes.discovery.research", new_callable=AsyncMock,
        return_value=GroundedAnswer("## 1. Foundations\nDocker packages apps.\n",
                                     ["Docs - https://docs.docker.com"]))
@@ -275,7 +277,7 @@ def test_split_message_respects_telegram_limit():
 
 
 @patch("saras.core.modes.discovery.ask", new_callable=AsyncMock,
-       side_effect=["Docker Basics", EXTRACTION_EN])
+       return_value=EXTRACTION_EN)
 @patch("saras.core.modes.discovery.research", new_callable=AsyncMock,
        return_value=GroundedAnswer("## 1. Foundations\nExplanation without search.\n",
                                     [], grounded=False))
@@ -367,7 +369,7 @@ def test_ask_raises_model_unavailable_when_all_overloaded(monkeypatch):
 
 
 @patch("saras.core.modes.discovery.ask", new_callable=AsyncMock,
-       side_effect=["Docker Basics", EXTRACTION_EN])
+       return_value=EXTRACTION_EN)
 @patch("saras.core.modes.discovery.research", new_callable=AsyncMock,
        return_value=GroundedAnswer(BODY_EN, ["Docs - https://docs.docker.com"]))
 def test_discovery_related_uses_topic_not_generic_words(mock_research, mock_ask, vault):
@@ -401,3 +403,97 @@ def test_ask_fast_falls_back_to_main_model_when_fast_is_overloaded(monkeypatch):
     monkeypatch.setattr(gemini_client.config, "gemini_fast_model", lambda: "fast-model")
     assert asyncio.run(gemini_client.ask("hi", fast=True)) == "Main answer."
     assert calls == ["fast-model", "fast-model", "main-model"]
+
+
+def _extraction_with_title(title: str) -> str:
+    return json.dumps({**json.loads(EXTRACTION_ES), "title": title})
+
+
+@patch("saras.core.modes.discovery.ask", new_callable=AsyncMock,
+       return_value=_extraction_with_title("¿Qué es Docker: una guía?"))
+@patch("saras.core.modes.discovery.research", new_callable=AsyncMock,
+       return_value=GroundedAnswer(BODY_ES, ["Docs - https://docs.docker.com"]))
+def test_discovery_backlinks_use_the_sanitized_hub_title(mock_research, mock_ask, vault):
+    result = asyncio.run(discovery.run("Explícame qué es Docker"))
+    assert os.path.basename(result.note_path) == "¿Qué es Docker una guía.md"
+    concept = (vault / "Concepts" / "Container.md").read_text(encoding="utf-8")
+    assert "- [[¿Qué es Docker una guía]]" in concept
+    assert "📚 Saved to Vault: [[¿Qué es Docker una guía]]" in result.reply
+    assert mock_ask.await_count == 1  # title comes from the extraction call
+
+
+@patch("saras.core.modes.discovery.ask", new_callable=AsyncMock, return_value=EXTRACTION_ES)
+@patch("saras.core.modes.discovery.research", new_callable=AsyncMock,
+       return_value=GroundedAnswer(BODY_ES, ["Docs - https://docs.docker.com"]))
+def test_discovery_duplicate_title_backlinks_point_to_the_numbered_hub(mock_research, mock_ask, vault):
+    write_note("Discovery", "Docker Basics", "An older note.", ["discovery"])
+    result = asyncio.run(discovery.run("Explícame qué es Docker"))
+    assert os.path.basename(result.note_path) == "Docker Basics (2).md"
+    concept = (vault / "Concepts" / "Container.md").read_text(encoding="utf-8")
+    assert "- [[Docker Basics (2)]]" in concept
+    assert "- [[Docker Basics]]\n" not in concept
+    hub = open(result.note_path, encoding="utf-8").read()
+    assert 'title: "Docker Basics (2)"' in hub
+
+
+@patch("saras.core.modes.discovery.ask", new_callable=AsyncMock, return_value=EXTRACTION_ES)
+@patch("saras.core.modes.discovery.research", new_callable=AsyncMock,
+       return_value=GroundedAnswer(BODY_ES, ["Docs - https://docs.docker.com"]))
+def test_discovery_reply_links_concepts_by_their_real_note_titles(mock_research, mock_ask, vault):
+    # "Container" matches an existing note by alias, so the link must use that note's name.
+    write_raw_note("Concepts", "Contenedor de software",
+                   '---\naliases: ["Container"]\ntags: [concept]\n---\n\nTexto.\n')
+    result = asyncio.run(discovery.run("Explícame qué es Docker"))
+    assert "• [[Contenedor de software]]" in result.reply
+    assert "[[Container]]" not in result.reply
+
+
+@patch("saras.core.modes.discovery.find_related")
+@patch("saras.core.modes.discovery.ask", new_callable=AsyncMock, return_value=EXTRACTION_EN)
+@patch("saras.core.modes.discovery.research", new_callable=AsyncMock,
+       return_value=GroundedAnswer(BODY_EN, ["Docs - https://docs.docker.com"]))
+def test_discovery_nosave_skips_the_vault_scan(mock_research, mock_ask, mock_related, vault):
+    asyncio.run(discovery.run("Explain what Docker is", save=False))
+    mock_related.assert_not_called()
+
+
+def test_parse_extraction_reads_title_and_falls_back_to_empty():
+    assert discovery._parse_extraction(EXTRACTION_EN, "x")["title"] == "Docker Basics"
+    assert discovery._parse_extraction("not json", "x")["title"] == ""
+
+
+@patch("saras.core.modes.discovery.ask", new_callable=AsyncMock, return_value=EXTRACTION_ES)
+@patch("saras.core.modes.discovery.research", new_callable=AsyncMock,
+       return_value=GroundedAnswer(BODY_ES, ["Docs - https://docs.docker.com"]))
+def test_find_existing_returns_the_saved_hub_and_its_summary(mock_research, mock_ask, vault):
+    first = asyncio.run(discovery.run("Explícame qué es Docker"))
+    found = discovery.find_existing("Qué es Docker")
+    assert found.note_path == first.note_path
+    assert "Ya investigaste esto / Already researched: [[Docker Basics]]" in found.reply
+    assert "Docker empaqueta apps en contenedores ligeros y portables." in found.reply
+    assert discovery.find_existing("Explícame qué es Kubernetes") is None
+
+
+@patch("saras.core.modes.retrieval.ask", new_callable=AsyncMock)
+def test_retrieval_ignores_a_fresh_note_with_only_a_passing_mention(mock_ask, vault):
+    write_note("Discovery", "Meal planning", "I read about docker once.", [])
+    result = asyncio.run(retrieval.run("What did I learn about Docker?"))
+    assert result.reply == retrieval.NOT_FOUND  # the recency boost alone can't make it relevant
+    mock_ask.assert_not_awaited()
+
+
+@patch("saras.core.modes.quiz.ask", new_callable=AsyncMock, return_value="1. Q?\n\n## Answers\n1. A")
+def test_quiz_skips_past_quizzes_and_tags_its_note(mock_ask, vault):
+    for i in range(4):
+        write_note("Quizzes", f"Quiz - Docker {i}", "Docker docker docker.", ["quiz", "docker"])
+    write_note("Discovery", "Docker", "Docker runs containers.", ["docker"])
+    result = asyncio.run(quiz.run("quiz me on Docker"))
+    prompt = mock_ask.await_args.args[0]
+    assert "[[Docker]]" in prompt and "Quiz - Docker" not in prompt
+    assert "type: quiz" in open(result.note_path, encoding="utf-8").read()
+
+
+@patch("saras.core.modes.execution.ask", new_callable=AsyncMock, side_effect=["- [ ] Step", "Plan"])
+def test_execution_note_has_a_type(mock_ask, vault):
+    result = asyncio.run(execution.run("Help me plan the move"))
+    assert "type: execution" in open(result.note_path, encoding="utf-8").read()

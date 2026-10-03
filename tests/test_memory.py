@@ -77,6 +77,17 @@ def test_clear_forgets_only_the_given_chat():
     assert [t.user for t in memory.history(2)] == ["q"]
 
 
+def test_drop_last_forgets_only_the_latest_turn():
+    memory = ConversationMemory()
+    memory.add(1, "q1", "a1")
+    memory.add(1, "q2", "a2")
+    assert memory.drop_last(1) is True
+    assert [t.user for t in memory.history(1)] == ["q1"]
+    assert memory.drop_last(1) is True
+    assert memory.drop_last(1) is False
+    assert memory.drop_last(99) is False
+
+
 def test_clear_on_an_unknown_chat_reports_nothing_to_clear():
     memory = ConversationMemory()
     assert memory.clear(1) is False

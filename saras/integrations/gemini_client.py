@@ -15,12 +15,6 @@ from saras import config
 
 _client: genai.Client | None = None
 
-LANGUAGE_RULE = (
-    "Always reply in the same language as the user's message "
-    "(Spanish if they wrote in Spanish, English if they wrote in English)."
-)
-
-
 log = logging.getLogger(__name__)
 
 
@@ -146,30 +140,3 @@ async def research(prompt: str, system: str | None = None) -> GroundedAnswer:
         return GroundedAnswer(text=await ask(prompt, system=system), grounded=False)
     health.last_ok = time.time()
     return GroundedAnswer(text=text, sources=sources)
-
-
-INTENT_LABELS = ("discovery", "retrieval", "execution", "quiz", "chat")
-
-
-async def classify_intent(message: str, history: str = "") -> str:
-    """Pick a mode label; `history` is recent conversation, so follow-ups keep their mode."""
-    prompt = (
-        "You route messages for SARAS, a personal knowledge assistant. "
-        "Classify the message with exactly one word:\n"
-        "- discovery: the user wants to learn or research something new\n"
-        "- retrieval: the user asks about something they learned, saved or decided before\n"
-        "- execution: the user wants to plan, organize or break down a task, project or deadline\n"
-        "- quiz: the user wants to be tested or quizzed on what they learned\n"
-        "- chat: greetings, thanks, small talk or anything else\n\n"
-    )
-    if history:
-        prompt += (
-            f"{history}\n\nA short follow-up (e.g. \"and in Python?\") continues what the "
-            "conversation was doing.\n\n"
-        )
-    prompt += f"Message: {message}\n\nLabel:"
-    answer = (await ask(prompt, fast=True)).lower()
-    for label in INTENT_LABELS:
-        if label in answer:
-            return label
-    return "chat"
