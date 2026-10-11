@@ -169,3 +169,25 @@ def test_upsert_concept_adds_new_notes_to_a_shared_index(vault):
     second = obsidian_vault.upsert_concept("Container", [], "---\n---\n\nother", "Aparece en", "- [[A]]", index=index)
     assert second == first  # matched through the alias of a note created earlier in the same run
     assert len(os.listdir(os.path.join(vault, "Concepts"))) == 1
+
+
+def test_find_discovery_note_by_title_ignores_case_accents_and_brackets(vault):
+    docker = _hub("Fundamentos de Docker", "Explícame qué es Docker")
+    _hub("Guía de RAG", "¿Qué sabes de rag?")
+    for name in ("fundamentos de docker", "[[Fundamentos de Docker]]", "Fundamentos de Docker.md"):
+        assert obsidian_vault.find_discovery_note(name) == docker
+    assert obsidian_vault.find_discovery_note("Guia de rag") is not None  # accent-insensitive
+
+
+def test_find_discovery_note_falls_back_to_topic_and_misses_cleanly(vault):
+    docker = _hub("Fundamentos de Docker", "Explícame qué es Docker")
+    assert obsidian_vault.find_discovery_note("qué es docker") == docker
+    assert obsidian_vault.find_discovery_note("Kubernetes") is None
+    assert obsidian_vault.find_discovery_note("") is None
+
+
+def test_note_question(vault):
+    path = _hub("Guía de RAG", "¿Qué sabes de rag?")
+    assert obsidian_vault.note_question(path) == "¿Qué sabes de rag?"
+    plain = obsidian_vault.write_note("Discovery", "Plain", "x", [])
+    assert obsidian_vault.note_question(plain) == ""

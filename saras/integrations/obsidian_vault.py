@@ -298,6 +298,15 @@ def _parse(path: str) -> tuple[list[str], list[str], str]:
     return tags, aliases, body
 
 
+def read_note_body(path: str) -> str | None:
+    """A note's Markdown without its frontmatter, or None if it can't be read (e.g. deleted)."""
+    try:
+        _, _, body = _parse(path)
+    except (OSError, UnicodeDecodeError):
+        return None
+    return body.strip()
+
+
 def _word_pattern(term: str) -> re.Pattern:
     # Whole-word match: a short term like "ia" or "ai" must not match inside an
     # unrelated longer word (e.g. "tecnologia", "inteligencia", "again").
@@ -465,6 +474,29 @@ def _frontmatter_value(path: str, key: str) -> str:
 def topic_terms(text: str) -> set[str]:
     """The words of `text` that name its topic: no stopwords, request verbs or title filler."""
     return {t for t in (_strip_accents(k) for k in keywords(text)) if t not in _REQUEST_FILLER}
+
+
+def note_question(path: str) -> str:
+    """The request a Discovery note was written for (frontmatter `question:`), or ""."""
+    try:
+        return _frontmatter_value(path, "question")
+    except (OSError, UnicodeDecodeError):
+        return ""
+
+
+def find_discovery_note(name: str) -> str | None:
+    """Path of the Discovery note called `name` ("[[Title]]" and accents/case don't matter).
+
+    Falls back to a saved hub on the same topic (find_discovery_hub) when no title matches.
+    """
+    wanted = _strip_accents(re.sub(r"^\[\[|\]\]$|\.md$", "", name.strip())).casefold().strip()
+    folder = os.path.join(config.obsidian_vault_path(), "Discovery")
+    if not wanted or not os.path.isdir(folder):
+        return None
+    for n in sorted(os.listdir(folder)):
+        if n.endswith(".md") and _strip_accents(note_title(n)).casefold() == wanted:
+            return os.path.join(folder, n)
+    return find_discovery_hub(name)
 
 
 def find_discovery_hub(request: str) -> str | None:

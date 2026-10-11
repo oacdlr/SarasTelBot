@@ -1,7 +1,7 @@
 """Retrieval Mode (Remember): answer from the Vault instead of re-researching."""
 from saras.core.modes.base import ModeResult
 from saras.core.persona import RETRIEVAL as SYSTEM
-from saras.integrations.gemini_client import ask
+from saras.integrations.llm import ask
 from saras.integrations.obsidian_vault import search_notes
 
 MIN_SCORE = 2.0  # relevance below this is too weak to answer from (recency boost not counted)

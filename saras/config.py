@@ -12,6 +12,8 @@ load_dotenv()
 
 DEFAULT_GEMINI_MODEL = "gemini-3.6-flash"
 DEFAULT_GEMINI_FAST_MODEL = "gemini-3.5-flash-lite"
+DEFAULT_ANTHROPIC_MODEL = "claude-opus-5-5"
+DEFAULT_ANTHROPIC_FAST_MODEL = "claude-haiku-4-5"
 
 
 def _required(name: str) -> str:
@@ -41,6 +43,22 @@ def gemini_model() -> str:
 
 def gemini_fast_model() -> str:
     return os.environ.get("GEMINI_FAST_MODEL", "").strip() or DEFAULT_GEMINI_FAST_MODEL
+
+
+def llm_provider() -> str:
+    return os.environ.get("LLM_PROVIDER", "").strip().lower() or "gemini"
+
+
+def anthropic_api_key() -> str:
+    return _required("ANTHROPIC_API_KEY")
+
+
+def anthropic_model() -> str:
+    return os.environ.get("ANTHROPIC_MODEL", "").strip() or DEFAULT_ANTHROPIC_MODEL
+
+
+def anthropic_fast_model() -> str:
+    return os.environ.get("ANTHROPIC_FAST_MODEL", "").strip() or DEFAULT_ANTHROPIC_FAST_MODEL
 
 
 def obsidian_vault_path() -> str:

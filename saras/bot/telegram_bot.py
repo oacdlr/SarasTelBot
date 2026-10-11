@@ -36,10 +36,12 @@ from saras.core.modes import chat, detail, discovery, execution, quiz, retrieval
 from saras.core.modes.base import ModeResult
 from saras.core.router import INTENT_LABELS, make_standalone, route
 from saras.core.router_log import log_correction
-from saras.integrations.gemini_client import ModelUnavailable, QuotaExceeded, health
+from saras.integrations.llm import ModelUnavailable, QuotaExceeded, health
 from saras.integrations.obsidian_vault import (
     count_notes,
     delete_note,
+    find_discovery_note,
+    note_question,
     note_title,
     recent_notes,
     search_notes,
@@ -235,17 +237,18 @@ async def respond(
             pending_answers[chat_id] = PendingAnswer(new_results[-1], topic, answer_id, existing, save)
             keyboard = _answer_keyboard(answer_id, existing)
     except QuotaExceeded:
-        log.warning("Gemini quota exhausted")
+        name = _provider_name()
+        log.warning("%s quota exhausted", name)
         reply = (
-            "⚠️ Se agotó la cuota de Gemini por ahora. Inténtalo más tarde o revisa "
-            "tu plan en https://ai.dev/rate-limit\n"
-            "(Gemini quota exhausted — try again later.)"
+            f"⚠️ Se agotó la cuota de {name} por ahora. Inténtalo más tarde o revisa tu plan.\n"
+            f"({name} quota exhausted — try again later.)"
         )
     except ModelUnavailable:
-        log.warning("Gemini overloaded")
+        name = _provider_name()
+        log.warning("%s overloaded", name)
         reply = (
-            "⚠️ Gemini está saturado en este momento. Inténtalo de nuevo en un minuto.\n"
-            "(Gemini is overloaded right now — try again in a minute.)"
+            f"⚠️ {name} está saturado en este momento. Inténtalo de nuevo en un minuto.\n"
+            f"({name} is overloaded right now — try again in a minute.)"
         )
     except NetworkError:
         log.warning("Network error while handling message")
@@ -382,6 +385,26 @@ def _mode_command(mode: str, usage: str):
     return handler
 
 
+async def rework(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/rework <note>: run Discovery again on a saved note's topic. The old note stays as it is."""
+    if not is_allowed(update):
+        return
+    name = command_args(update)
+    if not name:
+        await update.message.reply_text("Usage: /rework <note name>")
+        return
+    path = find_discovery_note(name)
+    if path is None:
+        await update.message.reply_text(
+            "No Discovery note found with that name. Try /search or /notes. "
+            "/ No encontré esa nota de Discovery."
+        )
+        return
+    topic = note_question(path) or note_title(path)
+    await _send(update.message.reply_text, f"🔁 Reworking [[{note_title(path)}]]…")
+    await respond(update, topic, force_mode="discovery", save=True, research_again=True, standalone=True)
+
+
 async def nosave(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """/nosave <message> answers it without writing to the Vault; alone, it arms the next message."""
     if not is_allowed(update):
@@ -412,13 +435,22 @@ async def last(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await _send(update.message.reply_text, f"📚 Last note: [[{note_title(paths[0])}]]")
 
 
+def _provider_name() -> str:
+    return "Anthropic" if config.llm_provider() == "anthropic" else "Gemini"
+
+
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_allowed(update):
         return
     await update.message.reply_text(
         format_status(
             health=health,
-            models=(config.gemini_model(), config.gemini_fast_model()),
+            models=(
+                (config.anthropic_model(), config.anthropic_fast_model())
+                if config.llm_provider() == "anthropic"
+                else (config.gemini_model(), config.gemini_fast_model())
+            ),
+            provider=_provider_name(),
             vault_path=config.obsidian_vault_path(),
             note_counts=count_notes(),
             mode_counts=mode_counts,
@@ -489,6 +521,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 COMMAND_MENU = [
     BotCommand("research", "Investigar un tema y guardarlo / Research a topic"),
+    BotCommand("rework", "Rehacer una nota de Discovery / Redo a Discovery note"),
     BotCommand("recall", "Buscar en tus notas / Ask your notes"),
     BotCommand("plan", "Convertir una meta en checklist / Turn a goal into a checklist"),
     BotCommand("quiz", "Examinarte sobre tus notas / Quiz yourself on your notes"),
@@ -531,6 +564,7 @@ def add_handlers(app) -> None:
         ["plan", "planea"], _mode_command("execution", "Usage: /plan <goal>")))
     app.add_handler(_command("quiz", _mode_command("quiz", "Usage: /quiz <topic>")))
     app.add_handler(_command(["fix", "mode"], fix))
+    app.add_handler(_command(["rework", "rehacer"], rework))
     app.add_handler(_command("nosave", nosave))
     app.add_handler(_command("last", last))
     app.add_handler(_command("notes", notes))

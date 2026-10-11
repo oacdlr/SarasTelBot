@@ -2,7 +2,7 @@
 from saras.core.memory import Turn, format_history
 from saras.core.modes.base import ModeResult
 from saras.core.persona import CHAT as SYSTEM
-from saras.integrations.gemini_client import ask
+from saras.integrations.llm import ask
 
 
 async def run(

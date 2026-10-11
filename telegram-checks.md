@@ -2,7 +2,7 @@
 
 Last updated: 2026-10-02
 
-Optional checks on Telegram for the 2026-10-02 changes (review items 3.4, 2.1, 2.2, 2.4).
+Optional checks on Telegram for the 2026-10-02 changes (review items 3.4, 2.1, 2.2, 2.4, 2.3, 3.3).
 The bot must be running the current code. If a check fails, the bot log usually shows why.
 
 - [ ] **Answer buttons don't rewrite the topic again**
@@ -23,3 +23,15 @@ The bot must be running the current code. If a check fails, the bot log usually 
   1. Send `/recall RAG`. Expected: it answers from your RAG notes, as before.
   2. Send `/recall` with something you only mentioned in passing and never researched.
      Expected: "I don't have anything on that in the Vault yet", not a weak answer.
+
+- [ ] **Plan and detail use the full research note**
+  1. Research something new, e.g. `Explícame qué es Kubernetes`.
+  2. Tap **📋 Planear esto**. Expected: the plan uses specifics from the note (sections, terms)
+     that weren't in the short chat summary. It should also arrive a bit faster than before.
+  3. Research another topic and tap **🔍 Más detalle**. Expected: it goes past what the note
+     already explains instead of repeating it.
+
+- [ ] **Plan still works if the research note is gone**
+  1. Research a topic, then delete its new note in `Discovery/` from Obsidian (leave the buttons alone).
+  2. Tap **📋 Planear esto** under that answer.
+  3. Expected: a normal plan built from the chat summary, no error in the log.

@@ -6,7 +6,7 @@ import logging
 import re
 
 from saras.core.memory import Turn, format_history
-from saras.integrations.gemini_client import ModelUnavailable, QuotaExceeded, ask
+from saras.integrations.llm import ModelUnavailable, QuotaExceeded, ask
 
 log = logging.getLogger(__name__)
 

@@ -47,8 +47,8 @@ touch `obsidian_vault.py`.
 - [x] 2.4 `write_note(note_type=...)` → `type: execution` / `type: quiz` in frontmatter
 
 ## Session 5: Execution/Detail context and cleanup
-- [ ] 2.3 Add a `read_note_body(path)` helper; Execution and Detail use the hub body, falling back to `r.reply`
-- [ ] 3.3 Run the plan and the title concurrently with `asyncio.gather`
+- [x] 2.3 Add a `read_note_body(path)` helper; Execution and Detail use the hub body, falling back to `r.reply`
+- [x] 3.3 Run the plan and the title concurrently with `asyncio.gather`
 - [x] 4 Delete `saras/persona_draft.py` (tracked, unused) and its mention in `DEV-GUIDE.txt:204`
 
 ## Later (decide first)

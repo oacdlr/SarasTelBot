@@ -3,7 +3,7 @@ import re
 
 from saras.core.modes.base import ModeResult
 from saras.core.persona import QUIZ
-from saras.integrations.gemini_client import ask
+from saras.integrations.llm import ask
 from saras.integrations.obsidian_vault import note_title, search_notes, write_note
 
 MIN_SCORE = 2.0  # on relevance, like Retrieval

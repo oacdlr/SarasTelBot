@@ -497,3 +497,43 @@ def test_quiz_skips_past_quizzes_and_tags_its_note(mock_ask, vault):
 def test_execution_note_has_a_type(mock_ask, vault):
     result = asyncio.run(execution.run("Help me plan the move"))
     assert "type: execution" in open(result.note_path, encoding="utf-8").read()
+
+
+def test_full_text_reads_the_saved_note_and_falls_back_to_the_reply(vault):
+    path = write_note("Discovery", "Docker", "## 1. Foundations\nThe full research.", ["discovery"])
+    result = ModeResult(reply="Short summary.", note_path=path)
+    assert result.full_text() == "## 1. Foundations\nThe full research."  # body only, no frontmatter
+    os.remove(path)  # e.g. "🗑️ No guardar"
+    assert result.full_text() == "Short summary."
+    assert ModeResult(reply="Chat only.").full_text() == "Chat only."
+
+
+@patch("saras.core.modes.execution.ask", new_callable=AsyncMock, side_effect=["- [ ] Step", "Docker Plan"])
+def test_execution_plans_from_the_full_research_note(mock_ask, vault):
+    hub = write_note("Discovery", "Docker", "Layers, images and volumes in depth.", ["discovery"])
+    asyncio.run(execution.run("Plan learning Docker", previous=[ModeResult(reply="Short.", note_path=hub)]))
+    plan_prompt = mock_ask.await_args_list[0].args[0]
+    assert "Layers, images and volumes in depth." in plan_prompt and "Short." not in plan_prompt
+
+
+@patch("saras.core.modes.detail.ask", new_callable=AsyncMock, return_value="Deeper answer.")
+def test_detail_expands_from_the_full_research_note(mock_ask, vault):
+    hub = write_note("Discovery", "Docker", "Layers, images and volumes in depth.", ["discovery"])
+    asyncio.run(detail.run("Docker", previous=[ModeResult(reply="Short.", note_path=hub)]))
+    assert "Layers, images and volumes in depth." in mock_ask.await_args.args[0]
+
+
+def test_execution_asks_for_plan_and_title_at_the_same_time(vault):
+    started, release = [], asyncio.Event()
+
+    async def _ask(prompt, system=None, fast=False):
+        started.append("title" if fast else "plan")
+        if len(started) == 2:
+            release.set()
+        await asyncio.wait_for(release.wait(), timeout=1)  # times out if the calls ran one after another
+        return "Plan Title" if fast else "- [ ] Step"
+
+    with patch("saras.core.modes.execution.ask", _ask):
+        result = asyncio.run(execution.run("Plan the move"))
+    assert sorted(started) == ["plan", "title"]
+    assert os.path.basename(result.note_path) == "Plan Title.md"

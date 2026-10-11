@@ -5,7 +5,7 @@ from datetime import date
 
 from saras.core.modes.base import ModeResult
 from saras.core.persona import DISCOVERY_PREFIX, LANGUAGE_RULE
-from saras.integrations.gemini_client import ask, research
+from saras.integrations.llm import ask, research
 from saras.integrations.obsidian_vault import (
     bare_list,
     concept_index,

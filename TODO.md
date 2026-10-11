@@ -55,6 +55,7 @@ Slash commands skip the router. The menu is registered from code at startup (`CO
 - [x] `/help`: lists commands and examples — 2026-09-28 (built from `COMMAND_MENU`, stays in sync automatically)
 - [x] `/notes [n]`: the n most recent notes, with links — 2026-09-28 (uses `recent_notes()`, default 5, max 20)
 - [x] `/search <word>`: plain keyword search in the vault, no Gemini call — 2026-09-28 (uses `search_notes()`)
+- [x] `/rework <note>` (alias `/rehacer`): runs Discovery again on a saved Discovery note's topic (its `question:` frontmatter, else its title) and saves the result as a new note; the old note is kept — 2026-10-04 (`find_discovery_note()` matches by title, else by topic)
 - [x] `/clear`: clears the remembered conversation — 2026-09-28 (`ConversationMemory.clear(chat_id)` added)
 
 ## Next improvements
@@ -65,7 +66,7 @@ Slash commands skip the router. The menu is registered from code at startup (`CO
 - [ ] Retrieval: embeddings index for meaning-based search
 - [x] Discovery: reuse an existing note instead of creating a near-duplicate — 2026-10-01: a lone research request on a topic that already has a hub (matched on its question/title words, `find_discovery_hub()`) gets that hub's link and short answer, no research call; buttons "📋 Planear esto", "🔍 Más detalle", "🔎 Investigar de nuevo" (runs it anyway). Updating the old hub in place is not done
 - [ ] Run SARAS 24/7 (Windows startup task or a small always-on machine)
-- [x] Code review 2026-09-30 (`review to-do.md`): sessions 1–4 done; session 2 checked on Telegram, optional checks for the rest in `telegram-checks.md`; session 5 open — 2026-10-02: answer buttons and `/fix` reuse the rewritten request (no second `make_standalone` call); search skips `templates/`, Retrieval/Quiz filter on relevance without the recency boost, Quiz skips past quizzes; Execution/Quiz notes get `type:` in frontmatter; one concept-index scan per Discovery run
+- [x] Code review 2026-09-30 (`review to-do.md`): sessions 1–5 done; session 2 checked on Telegram, optional checks for the rest in `telegram-checks.md`; only "Later (decide first)" is left — 2026-10-02: answer buttons and `/fix` reuse the rewritten request (no second `make_standalone` call); search skips `templates/`, Retrieval/Quiz filter on relevance without the recency boost, Quiz skips past quizzes; Execution/Quiz notes get `type:` in frontmatter; one concept-index scan per Discovery run; "📋 Planear esto" and "🔍 Más detalle" work from the full Discovery note instead of the chat summary (`ModeResult.full_text()`), and Execution asks for the plan and its title at the same time
 
 ## Later / blocked
 - [ ] NotebookLM integration (blocked: no public API yet)

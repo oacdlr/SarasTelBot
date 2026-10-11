@@ -79,8 +79,9 @@ needed — see reserve_note_path() in saras/integrations/obsidian_vault.py):
                    a concept note is reused across topics, not recreated each time).
 
     Execution/     one checklist note per plan, e.g. "Execution/Ship v2.md"
-                   Written by saras/core/modes/execution.py. Frontmatter tag
-                   `execution`. Body: the Markdown checklist Gemini wrote, plus a
+                   Written by saras/core/modes/execution.py. Frontmatter
+                   `type: execution` and tag `execution`. The plan and its
+                   title are asked from Gemini at the same time. Body: the Markdown checklist Gemini wrote, plus a
                    "## Related knowledge" section linking Discovery/Concept notes
                    used as context.
 
@@ -433,7 +434,7 @@ line that registers it with the Telegram app, and (to show up in Telegram's
 Current commands, for reference only — telegram_bot.py's COMMAND_MENU list
 is the source of truth, this will go stale: /start, /research (/investiga),
 /recall (/recuerda), /plan (/planea), /quiz, /notes [n], /search <word>,
-/last, /fix (/mode), /nosave, /clear, /status, /help.
+/rework (/rehacer) <note>, /last, /fix (/mode), /nosave, /clear, /status, /help.
 
 Two patterns, depending on what the command does:
 
@@ -537,7 +538,10 @@ How it's wired:
     the earlier Discovery answer, the same way "Investiga X y luego
     planea Y" chaining already worked) WITHOUT repeating that earlier
     answer's text in the new reply — see the `results` vs `new_results`
-    split inside respond(). Since respond() only needs an object shaped
+    split inside respond(). The context is ModeResult.full_text(): the
+    saved hub note's body (read with obsidian_vault.read_note_body()),
+    capped at 8000 characters, not the 5-8 line Telegram summary; it falls
+    back to the reply text if the note was deleted. Since respond() only needs an object shaped
     like `.message` / `.effective_chat.id`, the callback handler builds a
     minimal SimpleNamespace(message=query.message, effective_chat=...)
     rather than a real Update (a callback-query Update has no

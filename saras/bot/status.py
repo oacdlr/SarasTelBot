@@ -60,6 +60,7 @@ def format_status(
     *,
     health: GeminiHealth,
     models: tuple[str, str],
+    provider: str = "Gemini",
     vault_path: str,
     note_counts: dict[str, int],
     mode_counts: Counter,
@@ -72,7 +73,7 @@ def format_status(
     lines = [
         "🪷 SARAS status",
         "",
-        "Gemini",
+        provider,
         f"Models: {models[0]} (fast: {models[1]})",
         *gemini_lines(health, now),
         "",

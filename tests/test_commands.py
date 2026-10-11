@@ -231,3 +231,30 @@ def test_handlers_ignore_edited_messages():
 def test_handlers_still_match_new_messages():
     for text in ("/research docker", "/help", "/fix discovery", "hola, qué tal"):
         assert any(h.check_update(_real_update(text)) for h in _registered_handlers()), text
+
+
+@patch("saras.bot.telegram_bot.respond", new_callable=AsyncMock)
+@patch("saras.bot.telegram_bot.is_allowed", return_value=True)
+def test_rework_reruns_discovery_on_the_notes_question(mock_allowed, mock_respond, vault):
+    from saras.integrations.obsidian_vault import write_raw_note
+    path = write_raw_note(
+        "Discovery", "Fundamentos de Docker",
+        '---\ntitle: "Fundamentos de Docker"\nquestion: "Explícame qué es Docker"\n---\n\nBody.\n',
+    )
+    update = _update("/rework Fundamentos de Docker")
+    asyncio.run(telegram_bot.rework(update, None))
+    mock_respond.assert_awaited_once_with(
+        update, "Explícame qué es Docker", force_mode="discovery", save=True,
+        research_again=True, standalone=True,
+    )
+    assert os.path.exists(path)  # the old note is kept
+
+
+@patch("saras.bot.telegram_bot.respond", new_callable=AsyncMock)
+@patch("saras.bot.telegram_bot.is_allowed", return_value=True)
+def test_rework_unknown_note_and_no_argument(mock_allowed, mock_respond, vault):
+    for text in ("/rework No such note", "/rework"):
+        update = _update(text)
+        asyncio.run(telegram_bot.rework(update, None))
+        update.message.reply_text.assert_awaited_once()
+    mock_respond.assert_not_awaited()
